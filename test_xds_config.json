@@ -1,0 +1,72 @@
+[
+  {
+    "name": "testADSServer",
+    "version": "1",
+    "resource": {
+      "@type": "type.googleapis.com/envoy.config.listener.v3.Listener",
+      "name": "testADSServer",
+      "apiListener": {
+        "apiListener": {
+          "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+          "rds": {
+            "configSource": {
+              "ads": {},
+              "resourceApiVersion": "V3"
+            },
+            "routeConfigName": "testADSServer"
+          },
+          "httpFilters": [
+            {
+              "name": "default",
+              "typedConfig": {
+                "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "testADSServer",
+    "version": "1",
+    "resource": {
+      "@type": "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+      "name": "testADSServer",
+      "virtualHosts": [
+        {
+          "name": "testADSServer",
+          "domains": [
+            "*"
+          ],
+          "routes": [
+            {
+              "name": "default",
+              "match": {
+                "prefix": ""
+              },
+              "route": {
+                "cluster": "testADSServer"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "testADSServer",
+    "version": "1",
+    "resource": {
+      "@type": "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+      "name": "testADSServer",
+      "type": "EDS",
+      "edsClusterConfig": {
+        "edsConfig": {
+          "ads": {},
+          "resourceApiVersion": "V3"
+        }
+      }
+    }
+  }
+]

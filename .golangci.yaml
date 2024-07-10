@@ -1,0 +1,13 @@
+linters:
+  enable:
+    - bodyclose
+    - errname
+    - errorlint
+    - exhaustive
+    - goconst
+    - gofmt
+    - goimports
+    - gocritic
+    - predeclared
+    - usestdlibvars
+    - unused

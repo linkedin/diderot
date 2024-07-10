@@ -1,0 +1,13 @@
+.DS_store
+.*.swp
+.*.swo
+*.iml
+*.ipr
+*.iws
+*.sublime-*
+.direnv/
+.gradle/
+.idea/
+.vscode/
+*.prof
+.cov

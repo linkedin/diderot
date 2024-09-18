@@ -45,7 +45,6 @@ func newHandler(
 		ctx:                           ctx,
 		ignoreDeletes:                 ignoreDeletes,
 		send:                          send,
-		entries:                       map[string]entry{},
 		immediateNotificationReceived: newNotifyOnceChan(),
 		notificationReceived:          newNotifyOnceChan(),
 	}
@@ -85,6 +84,10 @@ func (ch notifyOnceChan) reset() {
 	}
 }
 
+var entryMapPool = sync.Pool{New: func() any {
+	return make(map[string]entry)
+}}
+
 // handler implements the BatchSubscriptionHandler interface using a backing map to aggregate updates
 // as they come in, and flushing them out, according to when the limiter permits it.
 type handler struct {
@@ -106,7 +109,7 @@ type handler struct {
 	// then checks whether immediateNotificationReceived has been signaled, and if so skips the granular
 	// rate limiter. Otherwise, it either waits for the granular rate limit to clear, or
 	// immediateNotificationReceived to be signaled, whichever comes first. Only then does it invoke
-	// swapResourceMaps which resets notificationReceived, immediateNotificationReceived and entries to a
+	// swapEntries which resets notificationReceived, immediateNotificationReceived and entries to a
 	// state where they can receive more notifications while, in the background, it invokes send with all
 	// accumulated entries up to this point. Once send completes, it returns to waiting on
 	// notificationReceived. All operations involving these channels will exit early if ctx is cancelled,
@@ -119,20 +122,19 @@ type handler struct {
 	batchStarted bool
 }
 
-// swapResourceMaps sets entries to the given map and returns the original value of h.resources and
-// resets immediateNotificationReceived and notificationReceived.
-func (h *handler) swapResourceMaps(entries map[string]entry) map[string]entry {
+// swapEntries grabs the lock then swaps the entries map to a nil map. It resets notificationReceived
+// and immediateNotificationReceived, and returns original entries map that was swapped.
+func (h *handler) swapEntries() map[string]entry {
 	h.lock.Lock()
 	defer h.lock.Unlock()
-	entries, h.entries = h.entries, entries
+	entries := h.entries
+	h.entries = nil
 	h.notificationReceived.reset()
 	h.immediateNotificationReceived.reset()
 	return entries
 }
 
 func (h *handler) loop() {
-	entries := map[string]entry{}
-
 	for {
 		select {
 		case <-h.ctx.Done():
@@ -148,14 +150,14 @@ func (h *handler) loop() {
 			}
 		}
 
-		entries = h.swapResourceMaps(entries)
-
+		entries := h.swapEntries()
 		if err := h.send(entries); err != nil {
 			return
 		}
 
-		// TODO: have an admin UI that shows which clients are lagging the most
+		// Return the used map to the pool after clearing it.
 		clear(entries)
+		entryMapPool.Put(entries)
 	}
 }
 
@@ -223,6 +225,10 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 
 	if r == nil && h.ignoreDeletes {
 		return
+	}
+
+	if h.entries == nil {
+		h.entries = entryMapPool.Get().(map[string]entry)
 	}
 
 	h.entries[name] = entry{

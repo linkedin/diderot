@@ -1,6 +1,6 @@
 PACKAGE = github.com/linkedin/diderot
 SOURCE_FILES = $(wildcard $(shell git ls-files))
-PROFILES = out
+PROFILES = $(PWD)/out
 COVERAGE = $(PROFILES)/diderot.cov
 GOBIN = $(shell go env GOPATH)/bin
 
@@ -47,7 +47,7 @@ profile_cache:
 	$(MAKE) -B $(PROFILES)/BenchmarkCacheThroughput.bench BENCH_PKG=./cache
 
 profile_handlers:
-	$(MAKE) -B $(PROFILES)/BenchmarkHandlers.bench BENCH_PKG=./server
+	$(MAKE) -B $(PROFILES)/BenchmarkHandlers.bench BENCH_PKG=./internal/server
 
 BENCHCOUNT = 1
 BENCHTIME = 1s

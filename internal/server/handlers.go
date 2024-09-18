@@ -151,7 +151,6 @@ func (h *handler) loop() {
 		}
 
 		entries := h.swapEntries()
-		// TODO: have an admin UI that shows which clients are lagging the most
 		if err := h.send(entries); err != nil {
 			return
 		}

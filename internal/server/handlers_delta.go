@@ -92,7 +92,7 @@ type deltaSender struct {
 	queuedUpdates []queuedResourceUpdate
 	// The minimum size an encoded chunk will serialize to, in bytes. Used to check whether a given
 	// update can _ever_ be sent, and as the initial size of a chunk. Note that this value only depends
-	// on utils.NonceLength and the length of typeURL.
+	// on utils.MaxNonceLength and the length of typeURL.
 	minChunkSize int
 }
 
@@ -174,6 +174,11 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]entry) (chunks []*ads.De
 			"typeURL", ds.typeURL,
 			"updates", len(ds.queuedUpdates),
 		)
+		for i, c := range chunks {
+			c.Nonce = utils.NewNonce(len(chunks) - i - 1)
+		}
+	} else {
+		chunks[0].Nonce = utils.NewNonce(0)
 	}
 
 	return chunks
@@ -182,7 +187,6 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]entry) (chunks []*ads.De
 func (ds *deltaSender) newChunk() *ads.DeltaDiscoveryResponse {
 	return &ads.DeltaDiscoveryResponse{
 		TypeUrl: ds.typeURL,
-		Nonce:   utils.NewNonce(),
 	}
 }
 

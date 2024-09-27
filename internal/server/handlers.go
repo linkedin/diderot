@@ -324,7 +324,7 @@ func newSotWHandler(
 
 			res := &ads.SotWDiscoveryResponse{
 				TypeUrl: typeUrl,
-				Nonce:   utils.NewNonce(),
+				Nonce:   utils.NewNonce(0),
 			}
 			for _, e := range entries {
 				res.Resources = append(res.Resources, e.Resource.Resource)
@@ -349,7 +349,7 @@ func newSotWHandler(
 
 			res := &ads.SotWDiscoveryResponse{
 				TypeUrl: typeUrl,
-				Nonce:   utils.NewNonce(),
+				Nonce:   utils.NewNonce(0),
 			}
 			for _, r := range allResources {
 				res.Resources = append(res.Resources, r.Resource.Resource)

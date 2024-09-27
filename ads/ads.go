@@ -5,6 +5,8 @@ protocol (ADS), such as convenient type aliases, constants and core definitions.
 package ads
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
@@ -254,4 +256,25 @@ func LookupStreamTypeByRPCMethod(rpcMethod string) (StreamType, bool) {
 	default:
 		return UnknownStreamType, false
 	}
+}
+
+// ParseRemainingChunksFromNonce checks whether the Diderot server implementation chunked the delta
+// responses because not all resources could fit in the same response without going over the default
+// max gRPC message size of 4MB. A nonce from Diderot always starts with the 64-bit nanosecond
+// timestamp of when the response was generated on the server. Then the number of remaining chunks as
+// a 32-bit integer. The sequence of integers is binary encoded with [binary.BigEndian] then hex
+// encoded. If the given nonce does not match the expected format, this function simply returns 0, as
+// it means the nonce was not created by Diderot server implementation, and therefore does not
+// contain the expected information.
+func ParseRemainingChunksFromNonce(nonce string) (remainingChunks int) {
+	decoded, err := hex.DecodeString(nonce)
+	if err != nil {
+		return 0
+	}
+
+	if len(decoded) != 12 {
+		return 0
+	}
+
+	return int(binary.BigEndian.Uint32(decoded[8:12]))
 }

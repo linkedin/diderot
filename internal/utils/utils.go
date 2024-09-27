@@ -2,8 +2,9 @@ package utils
 
 import (
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -12,24 +13,33 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// NonceLength is the length of the string returned by NewNonce. NewNonce encodes the current UNIX
-// time in nanos in hex encoding, so the nonce will be 16 characters if the current UNIX nano time is
-// greater than 2^60-1. This is because it takes 16 hex characters to encode 64 bits, but only 15 to
-// encode 60 bits (the output of strconv.FormatInt is not padded by 0s). 2^60-1 nanos from epoch time
-// (January 1st 1970) is 2006-07-14 23:58:24.606, which as of this writing is over 17 years ago. This
-// is why it's guaranteed that NonceLength will be 16 characters (before that date, encoding the
-// nanos only required 15 characters). For the curious, the UNIX nano timestamp will overflow int64
-// some time in 2262, making this constant valid for the next few centuries.
-const NonceLength = 16
+const (
+	// NonceLength is the length of the string returned by NewNonce. NewNonce encodes the current UNIX
+	// time in nanos and the remaining chunks, encoded as 64-bit and 32-bit integers respectively, then
+	// hex encoded. This means a nonce will always be 8 + 4 bytes, multiplied by 2 by the hex encoding.
+	NonceLength = (8 + 4) * 2
+)
 
-// NewNonce creates a new unique nonce based on the current UNIX time in nanos. It always returns a
-// string of length NonceLength.
-func NewNonce() string {
-	// The second parameter to FormatInt is the base, e.g. 2 will return binary, 8 will return octal
-	// encoding, etc. 16 means FormatInt returns the integer in hex encoding, e.g. 30 => "1e" or
-	// 1704239351400 => "18ccc94c668".
-	const hexBase = 16
-	return strconv.FormatInt(time.Now().UnixNano(), hexBase)
+// NewNonce creates a new unique nonce based on the current UNIX time in nanos, always returning a
+// string of [NonceLength].
+func NewNonce(remainingChunks int) string {
+	return newNonce(time.Now(), remainingChunks)
+}
+
+func newNonce(now time.Time, remainingChunks int) string {
+	// preallocating these buffers with constants (instead of doing `out = make([]byte, len(buf) * 2)`)
+	// means the compiler will allocate them on the stack, instead of heap. This significantly reduces
+	// the amount of garbage created by this function, as the only heap allocation will be the final
+	// string(out), rather than all of these buffers.
+	buf := make([]byte, NonceLength/2)
+	out := make([]byte, NonceLength)
+
+	binary.BigEndian.PutUint64(buf[:8], uint64(now.UnixNano()))
+	binary.BigEndian.PutUint32(buf[8:], uint32(remainingChunks))
+
+	hex.Encode(out, buf)
+
+	return string(out)
 }
 
 func GetTypeURL[T proto.Message]() string {

@@ -210,7 +210,7 @@ func (s *ADSServer) StreamAggregatedResources(stream ads.SotWStream) (err error)
 			return &ads.SotWDiscoveryResponse{
 				Resources: nil,
 				TypeUrl:   req.TypeUrl,
-				Nonce:     utils.NewNonce(),
+				Nonce:     utils.NewNonce(0),
 			}
 		},
 		setControlPlane: func(res *ads.SotWDiscoveryResponse, controlPlane *corev3.ControlPlane) {
@@ -251,7 +251,7 @@ func (s *ADSServer) DeltaAggregatedResources(stream ads.DeltaStream) (err error)
 			return &ads.DeltaDiscoveryResponse{
 				TypeUrl:          req.GetTypeUrl(),
 				RemovedResources: req.GetResourceNamesSubscribe(),
-				Nonce:            utils.NewNonce(),
+				Nonce:            utils.NewNonce(0),
 				ControlPlane:     s.controlPlane,
 			}
 		},

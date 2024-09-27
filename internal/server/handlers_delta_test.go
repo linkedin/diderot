@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -102,7 +103,7 @@ func TestInitialChunkSize(t *testing.T) {
 	typeURL := utils.GetTypeURL[*wrapperspb.StringValue]()
 	require.Equal(t, proto.Size(&ads.DeltaDiscoveryResponse{
 		TypeUrl: typeURL,
-		Nonce:   utils.NewNonce(),
+		Nonce:   utils.NewNonce(0),
 	}), initialChunkSize(typeURL))
 }
 
@@ -121,11 +122,21 @@ func TestDeltaHandlerChunking(t *testing.T) {
 		minChunkSize: initialChunkSize(typeURL),
 	}
 
-	sentResponses := ds.chunk(map[string]entry{
+	getSentResponses := func(resources map[string]entry, expectedChunks int) []*ads.DeltaDiscoveryResponse {
+		responses := ds.chunk(resources)
+		require.Len(t, responses, expectedChunks)
+		expectedRemainingChunks := 0
+		for _, res := range slices.Backward(responses) {
+			require.Equal(t, expectedRemainingChunks, ads.ParseRemainingChunksFromNonce(res.Nonce))
+			expectedRemainingChunks++
+		}
+		return responses
+	}
+
+	sentResponses := getSentResponses(map[string]entry{
 		foo.Name: {Resource: foo},
 		bar.Name: {Resource: bar},
-	})
-
+	}, 2)
 	require.Equal(t, len(sentResponses[0].Resources), 1)
 	require.Equal(t, len(sentResponses[1].Resources), 1)
 	response0 := sentResponses[0].Resources[0]
@@ -142,10 +153,10 @@ func TestDeltaHandlerChunking(t *testing.T) {
 	// Delete resources whose names are the same size as the resources to trip the chunker with the same conditions
 	name1 := strings.Repeat("1", resourceSize)
 	name2 := strings.Repeat("2", resourceSize)
-	sentResponses = ds.chunk(map[string]entry{
+	sentResponses = getSentResponses(map[string]entry{
 		name1: {Resource: nil},
 		name2: {Resource: nil},
-	})
+	}, 2)
 	require.Equal(t, len(sentResponses[0].RemovedResources), 1)
 	require.Equal(t, len(sentResponses[1].RemovedResources), 1)
 	require.ElementsMatch(t,
@@ -156,12 +167,12 @@ func TestDeltaHandlerChunking(t *testing.T) {
 	small1, small2, small3 := "a", "b", "c"
 	wayTooBig := strings.Repeat("3", 10*resourceSize)
 
-	sentResponses = ds.chunk(map[string]entry{
+	sentResponses = getSentResponses(map[string]entry{
 		small1:    {Resource: nil},
 		small2:    {Resource: nil},
 		small3:    {Resource: nil},
 		wayTooBig: {Resource: nil},
-	})
+	}, 1)
 	require.Equal(t, len(sentResponses[0].RemovedResources), 3)
 	require.ElementsMatch(t, []string{small1, small2, small3}, sentResponses[0].RemovedResources)
 	require.Equal(t, int64(1), statsHandler.DeltaResourcesOverMaxSize.Load())

@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/linkedin/diderot/ads"
@@ -46,6 +48,20 @@ func TestProtoMap(t *testing.T) {
 	})
 }
 
-func TestNonceLength(t *testing.T) {
-	require.Len(t, NewNonce(), NonceLength)
+func TestNewNonce(t *testing.T) {
+	now := time.Now()
+	t.Run("remainingChunks", func(t *testing.T) {
+		for _, expected := range []int{0, 42} {
+			nonce := newNonce(now, expected)
+			require.Equal(t, fmt.Sprintf("%x%08x", now.UnixNano(), expected), nonce)
+			actualRemainingChunks := ads.ParseRemainingChunksFromNonce(nonce)
+			require.Equal(t, expected, actualRemainingChunks)
+		}
+	})
+	t.Run("badNonce", func(t *testing.T) {
+		require.Zero(t, ads.ParseRemainingChunksFromNonce("foo"))
+	})
+	t.Run("oldNonce", func(t *testing.T) {
+		require.Zero(t, ads.ParseRemainingChunksFromNonce(fmt.Sprintf("%x", now.UnixNano())))
+	})
 }

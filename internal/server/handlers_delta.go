@@ -92,7 +92,7 @@ type deltaSender struct {
 	queuedUpdates []queuedResourceUpdate
 	// The minimum size an encoded chunk will serialize to, in bytes. Used to check whether a given
 	// update can _ever_ be sent, and as the initial size of a chunk. Note that this value only depends
-	// on utils.MaxNonceLength and the length of typeURL.
+	// on utils.NonceLength and the length of typeURL.
 	minChunkSize int
 }
 

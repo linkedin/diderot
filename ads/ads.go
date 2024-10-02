@@ -260,8 +260,8 @@ func LookupStreamTypeByRPCMethod(rpcMethod string) (StreamType, bool) {
 }
 
 var (
-	invalidNonceEncodingErr = errors.New("nonce isn't in hex encoding")
-	invalidNonceLengthErr   = errors.New("decoded nonce did not have expected length")
+	errInvalidNonceEncoding = errors.New("nonce isn't in hex encoding")
+	errInvalidNonceLength   = errors.New("decoded nonce did not have expected length")
 )
 
 // ParseRemainingChunksFromNonce checks whether the Diderot server implementation chunked the delta
@@ -276,11 +276,11 @@ var (
 func ParseRemainingChunksFromNonce(nonce string) (remainingChunks int, err error) {
 	decoded, err := hex.DecodeString(nonce)
 	if err != nil {
-		return 0, invalidNonceEncodingErr
+		return 0, errInvalidNonceEncoding
 	}
 
 	if len(decoded) != 12 {
-		return 0, invalidNonceLengthErr
+		return 0, errInvalidNonceLength
 	}
 
 	return int(binary.BigEndian.Uint32(decoded[8:12])), nil

@@ -174,6 +174,11 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]entry) (chunks []*ads.De
 			"typeURL", ds.typeURL,
 			"updates", len(ds.queuedUpdates),
 		)
+		for i, c := range chunks {
+			c.Nonce = utils.NewNonce(len(chunks) - i - 1)
+		}
+	} else {
+		chunks[0].Nonce = utils.NewNonce(0)
 	}
 
 	return chunks
@@ -182,7 +187,6 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]entry) (chunks []*ads.De
 func (ds *deltaSender) newChunk() *ads.DeltaDiscoveryResponse {
 	return &ads.DeltaDiscoveryResponse{
 		TypeUrl: ds.typeURL,
-		Nonce:   utils.NewNonce(),
 	}
 }
 

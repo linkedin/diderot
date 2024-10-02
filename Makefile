@@ -28,19 +28,23 @@ fmt: $(GOBIN)/goimports
 
 # Can be used to change the number of tests run, defaults to 1 to prevent caching
 TESTCOUNT = 1
-# Can be used to change the verobosity of tests: make test TESTVERBOSE=-v
-TESTVERBOSE =
-# Can be used to generate coverage reports for a specific package
-COVERPKG = $(PACKAGE)
+# Can be used to add flags to the go test invocation: make test TESTFLAGS=-v
+TESTFLAGS =
 # Can be used to change which package gets tested, defaults to all packages.
 TESTPKG = ./...
 
-test: $(COVERAGE)
-$(COVERAGE):
-	@mkdir -p $(@D)
-	go test -race -coverprofile=$(COVERAGE) -coverpkg=$(COVERPKG)/... -count=$(TESTCOUNT) $(TESTVERBOSE) $(TESTPKG)
+test:
+	go test -race -count=$(TESTCOUNT) $(TESTFLAGS) $(TESTPKG)
+
+# Can be used to generate coverage reports for a specific package
+COVERPKG = $(PACKAGE)
+
+.PHONY: $(COVERAGE)
 
 coverage: $(COVERAGE)
+$(COVERAGE):
+	@mkdir -p $(@D)
+	$(MAKE) test TESTFLAGS='-coverprofile=$(COVERAGE) -coverpkg=$(COVERPKG)/...'
 	go tool cover -html=$(COVERAGE)
 
 profile_cache:

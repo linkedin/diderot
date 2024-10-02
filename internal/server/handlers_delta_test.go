@@ -127,7 +127,9 @@ func TestDeltaHandlerChunking(t *testing.T) {
 		require.Len(t, responses, expectedChunks)
 		expectedRemainingChunks := 0
 		for _, res := range slices.Backward(responses) {
-			require.Equal(t, expectedRemainingChunks, ads.ParseRemainingChunksFromNonce(res.Nonce))
+			remaining, err := ads.ParseRemainingChunksFromNonce(res.Nonce)
+			require.NoError(t, err)
+			require.Equal(t, expectedRemainingChunks, remaining)
 			expectedRemainingChunks++
 		}
 		return responses

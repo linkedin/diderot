@@ -18,7 +18,7 @@ func ExampleParseRemainingChunksFromNonce() {
 		}
 		responses = append(responses, res)
 
-		if ads.ParseRemainingChunksFromNonce(res.Nonce) == 0 {
+		if remaining, _ := ads.ParseRemainingChunksFromNonce(res.Nonce); remaining == 0 {
 			break
 		}
 	}

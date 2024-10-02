@@ -54,14 +54,19 @@ func TestNewNonce(t *testing.T) {
 		for _, expected := range []int{0, 42} {
 			nonce := newNonce(now, expected)
 			require.Equal(t, fmt.Sprintf("%x%08x", now.UnixNano(), expected), nonce)
-			actualRemainingChunks := ads.ParseRemainingChunksFromNonce(nonce)
+			actualRemainingChunks, err := ads.ParseRemainingChunksFromNonce(nonce)
+			require.NoError(t, err)
 			require.Equal(t, expected, actualRemainingChunks)
 		}
 	})
 	t.Run("badNonce", func(t *testing.T) {
-		require.Zero(t, ads.ParseRemainingChunksFromNonce("foo"))
+		remaining, err := ads.ParseRemainingChunksFromNonce("foo")
+		require.Error(t, err)
+		require.Zero(t, remaining)
 	})
 	t.Run("oldNonce", func(t *testing.T) {
-		require.Zero(t, ads.ParseRemainingChunksFromNonce(fmt.Sprintf("%x", now.UnixNano())))
+		remaining, err := ads.ParseRemainingChunksFromNonce(fmt.Sprintf("%x", now.UnixNano()))
+		require.Error(t, err)
+		require.Zero(t, remaining)
 	})
 }

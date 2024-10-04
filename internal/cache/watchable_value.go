@@ -404,7 +404,7 @@ func (v *WatchableValue[T]) iterateSubscribers(
 				}
 
 				if !yield(handler, subscribedAt) {
-					break
+					return
 				}
 			}
 		}

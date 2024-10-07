@@ -338,13 +338,15 @@ func TestNotifyMetadata(t *testing.T) {
 // loop. The loop should abort and not call the remaining subscribers. It should instead restart and run through each
 // subscriber with the updated value.
 func TestWatchableValueUpdateCancel(t *testing.T) {
+	prefix := ads.XDSTPScheme + "/" + diderot.TypeOf[*Timestamp]().TrimmedURL() + "/foo/"
+
 	c := newCache()
 
-	r1 := newResource(name1, "0")
+	r1 := newResource(prefix+name1, "0")
 
 	var r1Wg, r2Wg sync.WaitGroup
 	r1Wg.Add(1)
-	r2Wg.Add(2)
+	r2Wg.Add(3)
 	notify := func(name string, r *ads.Resource[*Timestamp], _ ads.SubscriptionMetadata) {
 		// r is nil during the initial invocation of notify since the resource does not yet exist.
 		if r == nil {
@@ -352,7 +354,7 @@ func TestWatchableValueUpdateCancel(t *testing.T) {
 		}
 
 		if r == r1 {
-			c.Set(name1, "1", Now(), noTime)
+			c.Set(prefix+name1, "1", Now(), noTime)
 			// if notify is invoked with r1 more than once, this will panic
 			r1Wg.Done()
 		} else {
@@ -360,8 +362,12 @@ func TestWatchableValueUpdateCancel(t *testing.T) {
 		}
 	}
 
-	c.Subscribe(name1, testutils.NewSubscriptionHandler(notify))
-	c.Subscribe(name1, testutils.NewSubscriptionHandler(notify))
+	c.Subscribe(prefix+name1, testutils.NewSubscriptionHandler(notify))
+	// Use a glob and wildcard subscriptions, this flexes the code path in watchableValue that iterates
+	// through the various subscriber sets, and had a bug where breaking before exhausting the iterator
+	// would panic.
+	c.Subscribe(prefix+ads.WildcardSubscription, testutils.NewSubscriptionHandler(notify))
+	c.Subscribe(ads.WildcardSubscription, testutils.NewSubscriptionHandler(notify))
 
 	c.SetResource(r1, noTime)
 

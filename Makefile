@@ -32,12 +32,12 @@ TESTCOUNT = 1
 TESTFLAGS =
 # Can be used to change which package gets tested, defaults to all packages.
 TESTPKG = ./...
+# Can be used to generate coverage reports for a specific package
+COVERPKG = .
 
 test:
-	go test -race -count=$(TESTCOUNT) $(TESTFLAGS) $(TESTPKG)
-
-# Can be used to generate coverage reports for a specific package
-COVERPKG = $(PACKAGE)
+	go test -race -coverprofile=$(COVERAGE) -coverpkg=$(COVERPKG)/... -count=$(TESTCOUNT) $(TESTFLAGS) $(TESTPKG)
+	go tool cover -func out/diderot.cov | awk '/total:/{print "Coverage: "$$3}'
 
 .PHONY: $(COVERAGE)
 

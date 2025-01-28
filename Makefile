@@ -37,7 +37,8 @@ COVERPKG = .
 
 test:
 	go test -race -coverprofile=$(COVERAGE) -coverpkg=$(COVERPKG)/... -count=$(TESTCOUNT) $(TESTFLAGS) $(TESTPKG)
-	go tool cover -func out/diderot.cov | awk '/total:/{print "Coverage: "$$3}'
+	@mkdir -p $(dir $(COVERAGE))
+	go tool cover -func $(COVERAGE) | awk '/total:/{print "Coverage: "$$3}'
 
 .PHONY: $(COVERAGE)
 

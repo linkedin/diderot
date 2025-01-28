@@ -36,8 +36,8 @@ TESTPKG = ./...
 COVERPKG = .
 
 test:
-	go test -race -coverprofile=$(COVERAGE) -coverpkg=$(COVERPKG)/... -count=$(TESTCOUNT) $(TESTFLAGS) $(TESTPKG)
 	@mkdir -p $(dir $(COVERAGE))
+	go test -race -coverprofile=$(COVERAGE) -coverpkg=$(COVERPKG)/... -count=$(TESTCOUNT) $(TESTFLAGS) $(TESTPKG)
 	go tool cover -func $(COVERAGE) | awk '/total:/{print "Coverage: "$$3}'
 
 .PHONY: $(COVERAGE)

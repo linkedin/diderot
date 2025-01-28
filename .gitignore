@@ -11,3 +11,4 @@
 .vscode/
 *.prof
 .cov
+out/

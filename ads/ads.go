@@ -124,8 +124,12 @@ func (r *Resource[T]) Marshal() (*RawResource, error) {
 
 // TypeURL returns the underlying resource's type URL.
 func (r *Resource[T]) TypeURL() string {
-	var t T
-	return types.APITypePrefix + string(t.ProtoReflect().Descriptor().FullName())
+	// A literal `Resource[proto.Message]` works well when the goal is to store the deserialized
+	// [RawResource]. However, inferring the type URL cannot be done with [utils.GetTypeURL] since it
+	// uses reflection on the generic type parameter, which in this case is just [proto.Message], which
+	// causes a panic. Instead, infer the type directly from the deserialized message, avoiding the panic
+	// if the type parameter is indeed simply proto.Message.
+	return types.APITypePrefix + string(r.Resource.ProtoReflect().Descriptor().FullName())
 }
 
 // UnmarshalRawResource unmarshals the given RawResource and returns a Resource of the corresponding

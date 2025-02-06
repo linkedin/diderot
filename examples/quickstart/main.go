@@ -1,3 +1,5 @@
+//go:build examples
+
 package main
 
 import (
@@ -57,29 +59,20 @@ var (
 // functionality.
 type SimpleResourceLocator map[string]diderot.RawCache
 
-func (sl SimpleResourceLocator) IsTypeSupported(streamCtx context.Context, typeURL string) bool {
-	_, ok := sl[typeURL]
-	return ok
-}
-
 func (sl SimpleResourceLocator) Subscribe(
-	streamCtx context.Context,
+	_ context.Context,
 	typeURL, resourceName string,
 	handler ads.RawSubscriptionHandler,
 ) (unsubscribe func()) {
-	c := sl[typeURL]
+	c, ok := sl[typeURL]
+	if !ok {
+		// Do nothing if the given type is not supported
+		return func() {}
+	}
 	diderot.Subscribe(c, resourceName, handler)
 	return func() {
 		diderot.Unsubscribe(c, resourceName, handler)
 	}
-}
-
-func (sl SimpleResourceLocator) Resubscribe(
-	streamCtx context.Context,
-	typeURL, resourceName string,
-	handler ads.RawSubscriptionHandler,
-) {
-	diderot.Subscribe(sl[typeURL], resourceName, handler)
 }
 
 // getCache extracts a typed [diderot.Cache] from the given [SimpleResourceLocator].

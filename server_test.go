@@ -25,19 +25,15 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/xds"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 var (
-	badTypeURL   = "foobar"
-	badResources = []string{"badResource1", "badResource2"}
 	controlPlane = &core.ControlPlane{Identifier: "fooBar"}
 )
 
 type serverStatsHandler struct {
-	UnknownTypes     atomic.Int64
 	UnknownResources atomic.Int64
 	NACKsReceived    atomic.Int64
 	ACKsReceived     atomic.Int64
@@ -52,9 +48,6 @@ func (m *serverStatsHandler) HandleServerEvent(ctx context.Context, event server
 		if e.IsACK {
 			m.ACKsReceived.Add(1)
 		}
-		if e.IsRequestedTypeUnknown {
-			m.UnknownTypes.Add(1)
-		}
 	case *serverstats.ResourceQueued:
 		if !e.ResourceExists {
 			m.UnknownResources.Add(1)
@@ -63,7 +56,6 @@ func (m *serverStatsHandler) HandleServerEvent(ctx context.Context, event server
 }
 
 func (m *serverStatsHandler) reset() {
-	m.UnknownTypes.Store(0)
 	m.UnknownResources.Store(0)
 	m.NACKsReceived.Store(0)
 	m.ACKsReceived.Store(0)
@@ -85,12 +77,6 @@ func (tl *testLocator) checkContextNode(streamCtx context.Context) {
 	testutils.ProtoEquals(tl.t, tl.node, node)
 }
 
-func (tl *testLocator) IsTypeSupported(streamCtx context.Context, typeURL string) bool {
-	tl.checkContextNode(streamCtx)
-	_, ok := tl.caches[typeURL]
-	return ok
-}
-
 func (tl *testLocator) Subscribe(
 	streamCtx context.Context,
 	typeURL, resourceName string,
@@ -103,15 +89,6 @@ func (tl *testLocator) Subscribe(
 	return func() {
 		Unsubscribe(c, resourceName, handler)
 	}
-}
-
-func (tl *testLocator) Resubscribe(
-	streamCtx context.Context,
-	typeURL, resourceName string,
-	handler ads.RawSubscriptionHandler,
-) {
-	tl.checkContextNode(streamCtx)
-	Subscribe(tl.caches[typeURL], resourceName, handler)
 }
 
 func newTestLocator(t *testing.T, node *ads.Node, types ...Type) *testLocator {
@@ -330,18 +307,6 @@ func TestEndToEnd(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return statsHandler.NACKsReceived.Load() == 1
 		}, 2*time.Second, 100*time.Millisecond)
-
-		require.NoError(t, stream.Send(&ads.DeltaDiscoveryRequest{
-			Node:                   new(core.Node),
-			TypeUrl:                badTypeURL,
-			ResourceNamesSubscribe: badResources,
-		}))
-
-		waitForResponse(t, res, stream, 10*time.Millisecond)
-
-		require.Equal(t, badTypeURL, res.GetTypeUrl())
-		require.Equal(t, badResources, res.GetRemovedResources())
-		require.Equal(t, int64(1), statsHandler.UnknownTypes.Load())
 	})
 
 	t.Run("SotW", func(t *testing.T) {
@@ -436,18 +401,6 @@ func TestEndToEnd(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return statsHandler.NACKsReceived.Load() == 1
 		}, 2*time.Second, 100*time.Millisecond)
-
-		require.NoError(t, stream.Send(&ads.SotWDiscoveryRequest{
-			Node:          new(core.Node),
-			TypeUrl:       badTypeURL,
-			ResourceNames: badResources,
-		}))
-
-		waitForResponse(t, res, stream, 10*time.Millisecond)
-
-		require.Equal(t, badTypeURL, res.GetTypeUrl())
-		require.Empty(t, res.GetResources())
-		require.Equal(t, int64(1), statsHandler.UnknownTypes.Load())
 	})
 
 	// Author's note: there are no semantic differences in the way subscriptions and ACKs are managed for
@@ -487,21 +440,6 @@ func TestEndToEnd(t *testing.T) {
 		require.WithinDuration(t, time.Now(), startWait.Add(wait), delta)
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource).Resource, res.Resources[0])
-
-		// Note that the following is technically a protocol violation. As noted above, PseudoDeltaSotW
-		// cannot signal to the client that a resource does not exist, it simply never responds. However, in
-		// the event that the server receives a request for a type it does not know (and never will since
-		// they are not dynamic and determined at startup), since there is no way to signal that this request
-		// will never be satisfied, the server will respond with an empty response.
-		require.NoError(t, stream.Send(&ads.SotWDiscoveryRequest{
-			Node:          new(core.Node),
-			TypeUrl:       badTypeURL,
-			ResourceNames: badResources,
-		}))
-		waitForResponse(t, res, stream, wait+delta)
-		require.Equal(t, badTypeURL, res.GetTypeUrl(), prototext.Format(res))
-		require.Empty(t, res.GetResources())
-		require.Equal(t, int64(1), statsHandler.UnknownTypes.Load())
 	})
 
 }
@@ -712,22 +650,10 @@ func TestSubscriptionManagerSubscriptions(t *testing.T) {
 	}
 }
 
-type mockResourceLocator struct {
-	isTypeSupported func(typeURL string) bool
-	subscribe       func(typeURL, resourceName string) func()
-	resubscribe     func(typeURL, resourceName string)
-}
+type mockResourceLocator func(typeURL, resourceName string) func()
 
-func (m *mockResourceLocator) IsTypeSupported(_ context.Context, typeURL string) bool {
-	return m.isTypeSupported(typeURL)
-}
-
-func (m *mockResourceLocator) Subscribe(_ context.Context, typeURL, resourceName string, _ ads.RawSubscriptionHandler) func() {
-	return m.subscribe(typeURL, resourceName)
-}
-
-func (m *mockResourceLocator) Resubscribe(_ context.Context, typeURL, resourceName string, _ ads.RawSubscriptionHandler) {
-	m.resubscribe(typeURL, resourceName)
+func (m mockResourceLocator) Subscribe(_ context.Context, typeURL, resourceName string, _ ads.RawSubscriptionHandler) func() {
+	return m(typeURL, resourceName)
 }
 
 func TestImplicitWildcardSubscription(t *testing.T) {
@@ -735,44 +661,28 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 	h := NewNoopBatchSubscriptionHandler(t)
 	typeURL := TypeOf[*ads.Secret]().URL()
 
-	newMockLocator := func(t *testing.T) (l *mockResourceLocator, wildcardSub, fooSub chan struct{}) {
+	newMockLocator := func(t *testing.T) (rs mockResourceLocator, wildcardSub, fooSub chan struct{}) {
 		wildcardSub = make(chan struct{}, 1)
 		fooSub = make(chan struct{}, 1)
-		l = &mockResourceLocator{
-			isTypeSupported: func(actualTypeURL string) bool {
-				require.Equal(t, typeURL, actualTypeURL)
-				return true
-			},
-			subscribe: func(actualTypeURL, resourceName string) func() {
-				require.Equal(t, typeURL, actualTypeURL)
-				switch resourceName {
-				case ads.WildcardSubscription:
-					wildcardSub <- struct{}{}
-					return func() {
-						close(wildcardSub)
-					}
-				case foo:
-					fooSub <- struct{}{}
-					return func() {
-						close(fooSub)
-					}
-				default:
-					t.Fatalf("Unexpected resource name %q", resourceName)
-					return nil
+		rs = func(actualTypeURL, resourceName string) func() {
+			require.Equal(t, typeURL, actualTypeURL)
+			switch resourceName {
+			case ads.WildcardSubscription:
+				wildcardSub <- struct{}{}
+				return func() {
+					close(wildcardSub)
 				}
-			},
-			resubscribe: func(actualTypeURL, resourceName string) {
-				switch resourceName {
-				case ads.WildcardSubscription:
-					wildcardSub <- struct{}{}
-				case foo:
-					fooSub <- struct{}{}
-				default:
-					t.Fatalf("Unexpected resource name %q", resourceName)
+			case foo:
+				fooSub <- struct{}{}
+				return func() {
+					close(fooSub)
 				}
-			},
+			default:
+				t.Fatalf("Unexpected resource name %q", resourceName)
+				return nil
+			}
 		}
-		return l, wildcardSub, fooSub
+		return rs, wildcardSub, fooSub
 	}
 	requireSelect := func(t *testing.T, ch <-chan struct{}, shouldBeClosed bool) {
 		t.Helper()
@@ -933,15 +843,12 @@ func TestSubscriptionManagerUnsubscribeAll(t *testing.T) {
 
 		var wg sync.WaitGroup
 
-		l := &mockResourceLocator{
-			isTypeSupported: func(string) bool { return true },
-			subscribe: func(_, resourceName string) func() {
+		l := mockResourceLocator(func(_, resourceName string) func() {
+			wg.Done()
+			return func() {
 				wg.Done()
-				return func() {
-					wg.Done()
-				}
-			},
-		}
+			}
+		})
 
 		m := internal.NewDeltaSubscriptionManager(context.Background(), l, typeURL, h)
 
@@ -959,15 +866,12 @@ func TestSubscriptionManagerUnsubscribeAll(t *testing.T) {
 	t.Run("on context expiry", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		var wg sync.WaitGroup
-		l := &mockResourceLocator{
-			isTypeSupported: func(string) bool { return true },
-			subscribe: func(_, _ string) func() {
+		l := mockResourceLocator(func(_, _ string) func() {
+			wg.Done()
+			return func() {
 				wg.Done()
-				return func() {
-					wg.Done()
-				}
-			},
-		}
+			}
+		})
 		m := internal.NewDeltaSubscriptionManager(ctx, l, typeURL, h)
 
 		wg.Add(1)

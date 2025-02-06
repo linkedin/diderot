@@ -16,11 +16,6 @@ type ResourceLocator interface {
 		typeURL, resourceName string,
 		handler ads.RawSubscriptionHandler,
 	) (unsubscribe func())
-	Resubscribe(
-		streamCtx context.Context,
-		typeURL, resourceName string,
-		handler ads.RawSubscriptionHandler,
-	)
 }
 
 type SubscriptionManager[REQ proto.Message] interface {
@@ -200,12 +195,11 @@ func (c *subscriptionManagerCore) UnsubscribeAll() {
 }
 
 func (c *subscriptionManagerCore) subscribe(name string) {
-	_, ok := c.subscriptions[name]
-	if !ok {
-		c.subscriptions[name] = c.locator.Subscribe(c.ctx, c.typeURL, name, c.handler)
-	} else {
-		c.locator.Resubscribe(c.ctx, c.typeURL, name, c.handler)
+	unsub, ok := c.subscriptions[name]
+	if ok {
+		unsub()
 	}
+	c.subscriptions[name] = c.locator.Subscribe(c.ctx, c.typeURL, name, c.handler)
 }
 
 func (c *subscriptionManagerCore) unsubscribe(name string) {

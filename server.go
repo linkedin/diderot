@@ -22,7 +22,7 @@ var _ ads.Server = (*ADSServer)(nil)
 // An ADSServer is an implementation of the xDS protocol. It implements the tricky parts of an xDS
 // control plane such as managing subscriptions, parsing the incoming [ads.SotWDiscoveryRequest] and
 // [ads.DeltaDiscoveryRequest], etc. The actual business logic of locating the resources is injected
-// via the given ResoureLocator.
+// via the given [ResourceLocator].
 type ADSServer struct {
 	discovery.UnimplementedAggregatedDiscoveryServiceServer
 
@@ -206,13 +206,6 @@ func (s *ADSServer) StreamAggregatedResources(stream ads.SotWStream) (err error)
 			)
 		},
 		newManager: internal.NewSotWSubscriptionManager,
-		noSuchTypeResponse: func(req *ads.SotWDiscoveryRequest) *ads.SotWDiscoveryResponse {
-			return &ads.SotWDiscoveryResponse{
-				Resources: nil,
-				TypeUrl:   req.TypeUrl,
-				Nonce:     utils.NewNonce(0),
-			}
-		},
 		setControlPlane: func(res *ads.SotWDiscoveryResponse, controlPlane *corev3.ControlPlane) {
 			res.ControlPlane = controlPlane
 		},
@@ -247,14 +240,6 @@ func (s *ADSServer) DeltaAggregatedResources(stream ads.DeltaStream) (err error)
 			)
 		},
 		newManager: internal.NewDeltaSubscriptionManager,
-		noSuchTypeResponse: func(req *ads.DeltaDiscoveryRequest) *ads.DeltaDiscoveryResponse {
-			return &ads.DeltaDiscoveryResponse{
-				TypeUrl:          req.GetTypeUrl(),
-				RemovedResources: req.GetResourceNamesSubscribe(),
-				Nonce:            utils.NewNonce(0),
-				ControlPlane:     s.controlPlane,
-			}
-		},
 		setControlPlane: func(res *ads.DeltaDiscoveryResponse, controlPlane *corev3.ControlPlane) {
 			res.ControlPlane = controlPlane
 		},
@@ -298,7 +283,6 @@ type streamHandler[REQ adsDiscoveryRequest, RES proto.Message] struct {
 		typeURL string,
 		handler internal.BatchSubscriptionHandler,
 	) internal.SubscriptionManager[REQ]
-	noSuchTypeResponse     func(req REQ) RES
 	setControlPlane        func(res RES, controlPlane *corev3.ControlPlane)
 	aggregateSubscriptions map[string]internal.SubscriptionManager[REQ]
 }
@@ -335,16 +319,10 @@ func (h *streamHandler[REQ, RES]) recv() (REQ, error) {
 // indicates that the given type is unknown by the system and the request should be ignored.
 // Subsequent calls to this function with the same type url always return the same subscription
 // manager.
-func (h *streamHandler[REQ, RES]) getSubscriptionManager(
-	typeURL string,
-) (internal.SubscriptionManager[REQ], bool) {
+func (h *streamHandler[REQ, RES]) getSubscriptionManager(typeURL string) internal.SubscriptionManager[REQ] {
 	// Manager was already created, return immediately.
 	if manager, ok := h.aggregateSubscriptions[typeURL]; ok {
-		return manager, true
-	}
-
-	if !h.server.locator.IsTypeSupported(h.streamCtx, typeURL) {
-		return nil, false
+		return manager
 	}
 
 	manager := h.newManager(
@@ -361,7 +339,7 @@ func (h *streamHandler[REQ, RES]) getSubscriptionManager(
 	)
 
 	h.aggregateSubscriptions[typeURL] = manager
-	return manager, true
+	return manager
 }
 
 func (h *streamHandler[REQ, RES]) loop() error {
@@ -405,16 +383,6 @@ func (h *streamHandler[REQ, RES]) handleRequest(req REQ) (err error) {
 		h.aggregateSubscriptions = make(map[string]internal.SubscriptionManager[REQ])
 	}
 
-	typeURL := req.GetTypeUrl()
-	manager, ok := h.getSubscriptionManager(typeURL)
-	if !ok {
-		slog.WarnContext(h.streamCtx, "Ignoring unknown requested type", "typeURL", typeURL, "req", req)
-		if stat != nil {
-			stat.IsRequestedTypeUnknown = true
-		}
-		return h.send(h.noSuchTypeResponse(req))
-	}
-
 	switch {
 	case req.GetErrorDetail() != nil:
 		slog.WarnContext(h.streamCtx, "Got client NACK", "req", req)
@@ -428,7 +396,7 @@ func (h *streamHandler[REQ, RES]) handleRequest(req REQ) (err error) {
 		}
 	}
 
-	manager.ProcessSubscriptions(req)
+	h.getSubscriptionManager(req.GetTypeUrl()).ProcessSubscriptions(req)
 
 	return nil
 
@@ -437,9 +405,9 @@ func (h *streamHandler[REQ, RES]) handleRequest(req REQ) (err error) {
 // The ResourceLocator abstracts away the business logic used to locate resources and subscribe to
 // them. For example, while Subscribe is trivially implemented with a [Cache] which only serves
 // static predetermined resources, it could be implemented to instead generate a resource definition
-// on the fly, based on the client's attributes. Alternatively, some attribute in the client's
-// [ads.Node] may show that the client does not support IPv6 and should instead be shown IPv4
-// addresses in the [ads.Endpoint] response.
+// on the fly, based on the client's attributes. Alternatively, for example, some attribute in the
+// client's [ads.Node] may show that the client does not support IPv6 and should instead be shown
+// IPv4 addresses in the [ads.Endpoint] response.
 //
 // Many users of this library may also choose to implement a
 // [google.golang.org/grpc.StreamServerInterceptor] to populate additional values in the stream's
@@ -447,25 +415,20 @@ func (h *streamHandler[REQ, RES]) handleRequest(req REQ) (err error) {
 // provided in the request will always be provided in the stream context, and can be accessed with
 // [NodeFromContext].
 type ResourceLocator interface {
-	// IsTypeSupported is used to check whether the given client supports the requested type.
-	IsTypeSupported(streamCtx context.Context, typeURL string) bool
 	// Subscribe subscribes the given handler to the desired resource. The returned function should
-	// execute the unsubscription to the resource. It is guaranteed that the desired type has been
-	// checked via IsTypeSupported, and that therefore it is supported.
+	// execute the unsubscription to the resource. The desired behavior when a client resubscribes to a
+	// resource is for the resource to be re-sent. To achieve this, the returned unsubscription function
+	// will be called, then [Subscribe] will be called again with the same parameters.
+	//
+	// Note: There is no clear provision in the protocol for what to do if a client sends a request for a
+	// type that is unsupported by this server. Therefore, this is not explicitly handled by the Server.
+	// Instead, the implementation of this function may choose to either do nothing, or send back a
+	// deletion notification for the requested resources whose types are not supported.
 	Subscribe(
 		streamCtx context.Context,
 		typeURL, resourceName string,
 		handler ads.RawSubscriptionHandler,
 	) (unsubscribe func())
-	// Resubscribe will be called whenever a client resubscribes to a given resource. The xDS protocol
-	// dictates that re-subscribing to a resource should cause the server to re-send the resource. Note
-	// that implementations of this interface that leverage a [Cache] already support this behavior
-	// out-of-the-box.
-	Resubscribe(
-		streamCtx context.Context,
-		typeURL, resourceName string,
-		handler ads.RawSubscriptionHandler,
-	)
 }
 
 type nodeContextKey struct{}

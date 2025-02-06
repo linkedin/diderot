@@ -22,8 +22,6 @@ type Event interface {
 type RequestReceived struct {
 	// The received request, either [ads.SotWDiscoveryRequest] or [ads.DeltaDiscoveryRequest].
 	Req proto.Message
-	// True if the client requested a type that is not supported, determined by the ResourceLocator.
-	IsRequestedTypeUnknown bool
 	// Whether the request is an ACK
 	IsACK bool
 	// Whether the request is a NACK. Note that this is an important stat that requires immediate human

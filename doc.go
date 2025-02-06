@@ -9,11 +9,11 @@ provides two core elements:
 The [ADSServer] is an implementation of the xDS protocol's various features. It implements both the
 Delta and state-of-the-world variants, but abstracts this away completely by only exposing a single
 entry point: the [ResourceLocator]. When the server receives a request (be it Delta or SotW), it
-will first check if the requested type is supported, whether it is an ACK (or a NACK), then invoke,
-if necessary, the corresponding subscription methods on the ResourceLocator. The locator is simply
-in charge of invoking Notify on the handler whenever the resource changes, and the server will relay
-that resource update to the client using the corresponding response type. This makes it very easy to
-implement an xDS control plane without needing to worry about the finer details of the xDS protocol.
+will check whether it is an ACK (or a NACK), then invoke the corresponding subscription methods on
+the [ResourceLocator]. The locator is simply in charge of invoking Notify on the handler whenever
+the resource changes, and the server will relay that resource update to the client using the
+corresponding response type. This makes it very easy to implement an xDS control plane without
+needing to worry about the finer details of the xDS protocol.
 
 Most ResourceLocator implementations will likely be a series of [Cache] instances for the
 corresponding supported types, which implements the semantics of Subscribe and Resubscribe out of

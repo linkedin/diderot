@@ -10,7 +10,7 @@ GOBIN = $(shell go env GOPATH)/bin
 all: fmt build
 
 build:
-	go build -v ./...
+	go build -tags=examples -v ./...
 	go test -v -c -o /dev/null $$(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./...)
 
 tidy:

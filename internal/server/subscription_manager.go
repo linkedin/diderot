@@ -195,10 +195,7 @@ func (c *subscriptionManagerCore) UnsubscribeAll() {
 }
 
 func (c *subscriptionManagerCore) subscribe(name string) {
-	unsub, ok := c.subscriptions[name]
-	if ok {
-		unsub()
-	}
+	c.unsubscribe(name)
 	c.subscriptions[name] = c.locator.Subscribe(c.ctx, c.typeURL, name, c.handler)
 }
 

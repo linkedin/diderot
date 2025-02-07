@@ -661,10 +661,10 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 	h := NewNoopBatchSubscriptionHandler(t)
 	typeURL := TypeOf[*ads.Secret]().URL()
 
-	newMockLocator := func(t *testing.T) (rs mockResourceLocator, wildcardSub, fooSub chan struct{}) {
+	newMockLocator := func(t *testing.T) (l mockResourceLocator, wildcardSub, fooSub chan struct{}) {
 		wildcardSub = make(chan struct{}, 1)
 		fooSub = make(chan struct{}, 1)
-		rs = func(actualTypeURL, resourceName string) func() {
+		l = func(actualTypeURL, resourceName string) func() {
 			require.Equal(t, typeURL, actualTypeURL)
 			switch resourceName {
 			case ads.WildcardSubscription:
@@ -682,7 +682,7 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 				return nil
 			}
 		}
-		return rs, wildcardSub, fooSub
+		return l, wildcardSub, fooSub
 	}
 	requireSelect := func(t *testing.T, ch <-chan struct{}, shouldBeClosed bool) {
 		t.Helper()

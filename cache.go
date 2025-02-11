@@ -2,6 +2,7 @@ package diderot
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/linkedin/diderot/ads"
@@ -216,24 +217,44 @@ func (c *cache[T]) IsSubscribedTo(name string, handler ads.SubscriptionHandler[T
 }
 
 func (c *cache[T]) Subscribe(name string, handler ads.SubscriptionHandler[T]) {
+	wait := func(wgs ...*sync.WaitGroup) {
+		for _, wg := range wgs {
+			wg.Wait()
+		}
+	}
+
 	if name == ads.WildcardSubscription {
 		subscribedAt, version := c.wildcardSubscribers.Subscribe(handler)
-		c.EntryNames(func(name string) bool {
+
+		var waitGroups []*sync.WaitGroup
+		for name := range c.EntryNames {
 			// Cannot call c.Subscribe here because it always creates a backing watchableValue if it does not
 			// already exist. For wildcard subscriptions, if the entry doesn't exist (or in this case has been
 			// deleted), a subscription isn't necessary. If the entry reappears, it will be automatically
 			// subscribed to.
 			c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
-				value.NotifyHandlerAfterSubscription(handler, internal.WildcardSubscription, subscribedAt, version)
+				wg := value.NotifyHandlerAfterSubscription(
+					handler,
+					internal.WildcardSubscription,
+					subscribedAt,
+					version,
+				)
+				if wg != nil {
+					waitGroups = append(waitGroups, wg)
+				}
 			})
-			return true
-		})
+		}
+		wait(waitGroups...)
 	} else if gcURL, err := ads.ParseGlobCollectionURL(name, c.trimmedTypeURL); err == nil {
-		c.globCollections.Subscribe(gcURL, handler)
+		wait(c.globCollections.Subscribe(gcURL, handler)...)
 	} else {
+		var wg *sync.WaitGroup
 		c.createOrModifyEntry(name, func(name string, value *internal.WatchableValue[T]) {
-			value.Subscribe(handler)
+			wg = value.Subscribe(handler)
 		})
+		if wg != nil {
+			wg.Wait()
+		}
 	}
 }
 
@@ -337,7 +358,11 @@ type cacheWithPriority[T proto.Message] struct {
 func (c *cacheWithPriority[T]) Clear(name string, clearedAt time.Time) {
 	var shouldDelete bool
 	c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
-		shouldDelete = value.Clear(c.p, clearedAt) && value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
+		isFullClear := value.Clear(c.p, clearedAt)
+		if gcURL, err := ads.ExtractGlobCollectionURLFromResourceURN(name, c.trimmedTypeURL); err == nil {
+			c.globCollections.RemoveValueFromCollection(gcURL, value)
+		}
+		shouldDelete = isFullClear && value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
 	})
 	if shouldDelete {
 		c.deleteEntryIfNilAndNoSubscribers(name)

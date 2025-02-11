@@ -52,8 +52,12 @@ type WatchableValue[T proto.Message] struct {
 	// loopStatus stores the current state of the loop, see startNotificationLoop for additional
 	// details.
 	loopStatus loopStatus
-	// loopWg is incremented every time the loop starts, and decremented whenever it completes.
-	loopWg sync.WaitGroup
+	// subscriberWg is used when NotifyHandlerAfterSubscription is invoked while the notification loop is
+	// running. It will be set by NotifyHandlerAfterSubscription (if not already set) to indicate to the
+	// notification loop that a subscriber is currently waiting for the loop to send the notification of
+	// the current value instead of NotifyHandlerAfterSubscription doing it directly. This is done to
+	// avoid double notifications.
+	subscriberWg *sync.WaitGroup
 	// SubscriberSets is holds all the async.SubscriberSet instances relevant to this WatchableValue.
 	SubscriberSets [subscriptionTypes]*SubscriberSet[T]
 	// lastSeenSubscriberSetVersions stores the SubscriberSetVersion of the most-recently iterated
@@ -82,9 +86,9 @@ func (v *WatchableValue[T]) IsSubscribed(handler ads.SubscriptionHandler[T]) boo
 	return v.SubscriberSets[ExplicitSubscription].IsSubscribed(handler)
 }
 
-func (v *WatchableValue[T]) Subscribe(handler ads.SubscriptionHandler[T]) {
+func (v *WatchableValue[T]) Subscribe(handler ads.SubscriptionHandler[T]) *sync.WaitGroup {
 	subscribedAt, version := v.SubscriberSets[ExplicitSubscription].Subscribe(handler)
-	v.NotifyHandlerAfterSubscription(handler, ExplicitSubscription, subscribedAt, version)
+	return v.NotifyHandlerAfterSubscription(handler, ExplicitSubscription, subscribedAt, version)
 }
 
 func (v *WatchableValue[T]) Unsubscribe(handler ads.SubscriptionHandler[T]) (empty bool) {
@@ -198,9 +202,18 @@ const (
 )
 
 // NotifyHandlerAfterSubscription should be invoked by subscribers after subscribing to the
-// corresponding SubscriberSet. This function is guaranteed to only return once the handler has been
-// notified of the current value, since the xDS protocol spec explicitly states that an explicit
-// subscription to an entry must always be respected by sending the current value:
+// corresponding SubscriberSet. If the returned [sync.WaitGroup] is nil, the subscriber has been
+// notified of the current value. Otherwise, the subscriber will only be guaranteed to have been
+// notified once the WaitGroup is done (more details can be found in the inline comments of this
+// function, but the high level reason for this is that the notification loop will handle the
+// notification, which avoids double notifications). A WaitGroup is returned instead of this function
+// blocking inline to avoid a number of deadlocks that can occur in glob collections. The WaitGroup
+// should only be waited on *outside* of the glob collection critical sections such as
+// [GlobCollectionsMap.Subscribe] to avoid these deadlocks.
+//
+// It is critical that the WaitGroup be waited on before the top-level Subscribe function in the root
+// package returns, as it the API contract established by the cache. It also helps the implementation
+// of the xDS protocol, since it explicitly states the following:
 // https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol#subscribing-to-resources
 //
 //	A resource_names_subscribe field may contain resource names that the server believes the client is
@@ -212,7 +225,7 @@ func (v *WatchableValue[T]) NotifyHandlerAfterSubscription(
 	subType subscriptionType,
 	subscribedAt time.Time,
 	version SubscriberSetVersion,
-) {
+) *sync.WaitGroup {
 	v.lock.Lock()
 	value := v.readWithMetadataNoLock()
 
@@ -227,19 +240,25 @@ func (v *WatchableValue[T]) NotifyHandlerAfterSubscription(
 	// exit immediately.
 	case v.loopStatus != running && v.lastSeenSubscriberSetVersions[subType] >= version:
 		v.lock.Unlock()
-	// Since lastSeenSubscriberSetVersions is updated by the notification loop goroutine while holding the lock,
-	// it can be used to track whether the loop goroutine has already picked up the new
+	// Since lastSeenSubscriberSetVersions is updated by the notification loop goroutine while holding
+	// the lock, it can be used to track whether the loop goroutine has already picked up the new
 	// SubscriptionHandler and will notify it as part of its ongoing execution. In this case, the
-	// subscriber goroutine simply waits for the loop to complete to guarantee that the handler has been
-	// notified. This is as opposed to notifying the handler directly even though the loop is running,
-	// potentially resulting in a double notification.
+	// subscriber goroutine should wait on the returned [sync.WaitGroup], which waits for the loop to
+	// complete to guarantee that the handler has been notified. This is as opposed to notifying the
+	// handler directly even though the loop is running, potentially resulting in a double notification.
 	case v.loopStatus == initialized || (v.loopStatus == running && v.lastSeenSubscriberSetVersions[subType] >= version):
+		if v.subscriberWg == nil {
+			v.subscriberWg = new(sync.WaitGroup)
+			v.subscriberWg.Add(1)
+		}
+		wg := v.subscriberWg
 		v.lock.Unlock()
-		v.loopWg.Wait()
+		return wg
 	default:
 		handler.Notify(v.name, value.resource, value.subscriptionMetadata(subscribedAt))
 		v.lock.Unlock()
 	}
+	return nil
 }
 
 // startNotificationLoop spawns a goroutine that will notify all the subscribers to this entry of the
@@ -256,10 +275,8 @@ func (v *WatchableValue[T]) startNotificationLoop() {
 	}
 
 	v.loopStatus = initialized
-	v.loopWg.Add(1)
 
 	go func() {
-		defer v.loopWg.Done()
 		for {
 			v.lock.Lock()
 			value := v.readWithMetadataNoLock()
@@ -291,18 +308,24 @@ func (v *WatchableValue[T]) startNotificationLoop() {
 
 			v.lock.Lock()
 			done := v.valuesFromDifferentPrioritySources[v.currentIndex] == value.resource
+			var wg *sync.WaitGroup
 			if done {
 				// At this point, the most recent value was successfully pushed to all subscribers since it has not
 				// changed from when it was initially read at the top of the loop. Since the lock is currently held,
 				// setting loopRunning to false will signal to the next invocation of startNotificationLoop that the
 				// loop routine is not running.
 				v.loopStatus = notRunning
+				wg = v.subscriberWg
+				v.subscriberWg = nil
 			}
 			// Otherwise, if done isn't true then the value changed in between notifying the subscribers and
 			// grabbing the lock. In this case the loop will restart, reusing the goroutine.
 			v.lock.Unlock()
 
 			if done {
+				if wg != nil {
+					wg.Done()
+				}
 				return
 			}
 		}

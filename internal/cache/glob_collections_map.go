@@ -2,9 +2,10 @@ package internal
 
 import (
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/linkedin/diderot/ads"
-	"github.com/linkedin/diderot/internal/utils"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,11 +29,7 @@ func (gcm *GlobCollectionsMap[T]) createOrModifyCollection(
 	gcm.collections.Compute(
 		gcURL,
 		func(gcURL ads.GlobCollectionURL) *globCollection[T] {
-			gc := &globCollection[T]{
-				url:              gcURL.String(),
-				values:           make(utils.Set[*WatchableValue[T]]),
-				nonNilValueNames: make(utils.Set[string]),
-			}
+			gc := newGlobCollection[T](gcURL.String())
 			slog.Debug("Created collection", "url", gcURL)
 			return gc
 		},
@@ -44,8 +41,8 @@ func (gcm *GlobCollectionsMap[T]) createOrModifyCollection(
 // value in it.
 func (gcm *GlobCollectionsMap[T]) PutValueInCollection(gcURL ads.GlobCollectionURL, value *WatchableValue[T]) {
 	gcm.createOrModifyCollection(gcURL, func(gcURL ads.GlobCollectionURL, collection *globCollection[T]) {
-		collection.subscribersAndValuesLock.Lock()
-		defer collection.subscribersAndValuesLock.Unlock()
+		collection.lock.Lock()
+		defer collection.lock.Unlock()
 
 		value.globCollection = collection
 		collection.values.Add(value)
@@ -58,8 +55,8 @@ func (gcm *GlobCollectionsMap[T]) PutValueInCollection(gcURL ads.GlobCollectionU
 func (gcm *GlobCollectionsMap[T]) RemoveValueFromCollection(gcURL ads.GlobCollectionURL, value *WatchableValue[T]) {
 	var isEmpty bool
 	gcm.collections.ComputeIfPresent(gcURL, func(gcURL ads.GlobCollectionURL, collection *globCollection[T]) {
-		collection.subscribersAndValuesLock.Lock()
-		defer collection.subscribersAndValuesLock.Unlock()
+		collection.lock.Lock()
+		defer collection.lock.Unlock()
 
 		collection.values.Remove(value)
 
@@ -71,11 +68,36 @@ func (gcm *GlobCollectionsMap[T]) RemoveValueFromCollection(gcURL ads.GlobCollec
 }
 
 // Subscribe creates or gets the corresponding collection for the given URL using
-// createOrModifyCollection, then invokes globCollection.subscribe with the given handler.
-func (gcm *GlobCollectionsMap[T]) Subscribe(gcURL ads.GlobCollectionURL, handler ads.SubscriptionHandler[T]) {
+// createOrModifyCollection. It adds the given handler as a subscriber to the collection, then
+// iterates through all the values in the collection, notifying the handler for each value. If the
+// collection is empty, the handler will be notified that the resource is deleted. See the
+// documentation on [WatchableValue.NotifyHandlerAfterSubscription] for more insight on the returned
+// [sync.WaitGroup] slice.
+func (gcm *GlobCollectionsMap[T]) Subscribe(
+	gcURL ads.GlobCollectionURL, handler ads.SubscriptionHandler[T],
+) (wgs []*sync.WaitGroup) {
 	gcm.createOrModifyCollection(gcURL, func(_ ads.GlobCollectionURL, collection *globCollection[T]) {
-		collection.subscribe(handler)
+		subscribedAt, version := collection.subscribers.Subscribe(handler)
+
+		collection.lock.RLock()
+		defer collection.lock.RUnlock()
+
+		if len(collection.nonNilValueNames) == 0 {
+			handler.Notify(collection.url, nil, ads.SubscriptionMetadata{
+				SubscribedAt: subscribedAt,
+				ModifiedAt:   time.Time{},
+				CachedAt:     time.Time{},
+			})
+		} else {
+			for v := range collection.values {
+				wg := v.NotifyHandlerAfterSubscription(handler, GlobSubscription, subscribedAt, version)
+				if wg != nil {
+					wgs = append(wgs, wg)
+				}
+			}
+		}
 	})
+	return wgs
 }
 
 // Unsubscribe invokes globCollection.unsubscribe on the collection for the given URL, if it exists.
@@ -83,7 +105,11 @@ func (gcm *GlobCollectionsMap[T]) Subscribe(gcURL ads.GlobCollectionURL, handler
 func (gcm *GlobCollectionsMap[T]) Unsubscribe(gcURL ads.GlobCollectionURL, handler ads.SubscriptionHandler[T]) {
 	var isEmpty bool
 	gcm.collections.ComputeIfPresent(gcURL, func(_ ads.GlobCollectionURL, collection *globCollection[T]) {
-		isEmpty = collection.unsubscribe(handler)
+		collection.lock.RLock()
+		defer collection.lock.RUnlock()
+
+		collection.subscribers.Unsubscribe(handler)
+		isEmpty = collection.hasNoValuesOrSubscribersNoLock()
 	})
 	if isEmpty {
 		gcm.deleteCollectionIfEmpty(gcURL)
@@ -105,7 +131,8 @@ func (gcm *GlobCollectionsMap[T]) deleteCollectionIfEmpty(gcURL ads.GlobCollecti
 // IsSubscribed checks if the given handler is subscribed to the collection.
 func (gcm *GlobCollectionsMap[T]) IsSubscribed(gcURL ads.GlobCollectionURL, handler ads.SubscriptionHandler[T]) (subscribed bool) {
 	gcm.collections.ComputeIfPresent(gcURL, func(_ ads.GlobCollectionURL, collection *globCollection[T]) {
-		subscribed = collection.isSubscribed(handler)
+		// Locking is not required here, as SubscriberSet is safe for concurrent access.
+		subscribed = collection.subscribers.IsSubscribed(handler)
 	})
 	return subscribed
 }

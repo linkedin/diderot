@@ -418,7 +418,11 @@ type ResourceLocator interface {
 	// Subscribe subscribes the given handler to the desired resource. The returned function should
 	// execute the unsubscription to the resource. The desired behavior when a client resubscribes to a
 	// resource is for the resource to be re-sent. To achieve this, the returned unsubscription function
-	// will be called, then [Subscribe] will be called again with the same parameters.
+	// will be called, then [Subscribe] will be called again with the same parameters. Additionally, this
+	// function should only return when the given subscription handler has received the notification(s)
+	// for the corresponding subscription(s). It allows the server implementation to correctly batch
+	// resources for more efficient responses, as well as skip the granular limiter (if enabled). This is
+	// especially important during the initial bulk subscriptions a client will emit at startup.
 	//
 	// Note: There is no clear provision in the protocol for what to do if a client sends a request for a
 	// type that is unsupported by this server. Therefore, this is not explicitly handled by the Server.

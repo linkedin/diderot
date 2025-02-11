@@ -3,9 +3,12 @@ package diderot_test
 import (
 	"fmt"
 	"maps"
+	"math/rand/v2"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +35,8 @@ const (
 	name2 = "r2"
 	name3 = "r3"
 )
+
+var globCollectionPrefix = ads.XDSTPScheme + "/" + diderot.TypeOf[*Timestamp]().TrimmedURL() + "/"
 
 var noTime time.Time
 
@@ -338,7 +343,7 @@ func TestNotifyMetadata(t *testing.T) {
 // loop. The loop should abort and not call the remaining subscribers. It should instead restart and run through each
 // subscriber with the updated value.
 func TestWatchableValueUpdateCancel(t *testing.T) {
-	prefix := ads.XDSTPScheme + "/" + diderot.TypeOf[*Timestamp]().TrimmedURL() + "/foo/"
+	prefix := globCollectionPrefix + "foo/"
 
 	c := newCache()
 
@@ -442,20 +447,20 @@ func TestCacheEntryDeletion(t *testing.T) {
 func TestCacheCollections(t *testing.T) {
 	c := diderot.NewCache[*Timestamp]()
 
-	const prefix = "xdstp:///google.protobuf.Timestamp/"
+	const prefix = "xdstp:///google.protobuf.Timestamp/a/"
 
 	h := make(testutils.ChanSubscriptionHandler[*Timestamp], 1)
 
-	c.Subscribe(prefix+"a/*", h)
-	h.WaitForDelete(t, prefix+"a/*")
+	c.Subscribe(prefix+"*", h)
+	h.WaitForDelete(t, prefix+"*")
 
-	c.Subscribe(prefix+"a/foo", h)
-	h.WaitForDelete(t, prefix+"a/foo")
+	c.Subscribe(prefix+"foo", h)
+	h.WaitForDelete(t, prefix+"foo")
 
 	var updates []testutils.ExpectedNotification[*Timestamp]
 	var deletes []testutils.ExpectedNotification[*Timestamp]
 	for i := 0; i < 5; i++ {
-		name, v := prefix+"a/"+strconv.Itoa(i), strconv.Itoa(i)
+		name, v := prefix+""+strconv.Itoa(i), strconv.Itoa(i)
 		updates = append(updates, testutils.ExpectUpdate(c.Set(name, v, Now(), noTime)))
 		deletes = append(deletes, testutils.ExpectDelete[*Timestamp](name))
 	}
@@ -468,7 +473,7 @@ func TestCacheCollections(t *testing.T) {
 
 	h.WaitForNotifications(t, deletes...)
 
-	h.WaitForDelete(t, prefix+"a/*")
+	h.WaitForDelete(t, prefix+"*")
 }
 
 // TestCache raw validates that the various *Raw methods on the cache work as expected. Namely, raw
@@ -796,5 +801,149 @@ func DisableTime(tb testing.TB) {
 	internal.SetTimeProvider(func() (t time.Time) { return t })
 	tb.Cleanup(func() {
 		internal.SetTimeProvider(time.Now)
+	})
+}
+
+// The following tests flex various critical sections in the way glob collections are handled (along
+// with almost all the cache), to attempt to trigger a race condition. The tests must be run with
+// -race for this to have any use.
+func TestGlobRace(t *testing.T) {
+	prefix := globCollectionPrefix + "foo/"
+
+	// This tests many writers all competing for writes against overlapping entries.
+	t.Run("update", func(t *testing.T) {
+		c := newCache()
+
+		const (
+			entries = 100
+			writers = 100
+			count   = 100
+			readers = 100
+
+			doneVersion = "done"
+		)
+
+		entryNames := make([]string, entries)
+		for i := range entryNames {
+			name := prefix + strconv.Itoa(i)
+			entryNames[i] = name
+		}
+
+		var writesDone, readsDone sync.WaitGroup
+		writesDone.Add(writers)
+		readsDone.Add(writers * readers)
+
+		for range readers {
+			h := testutils.NewSubscriptionHandler(func(name string, r *ads.Resource[*Timestamp], _ ads.SubscriptionMetadata) {
+				if r.Version == doneVersion {
+					readsDone.Done()
+				}
+			})
+			c.Subscribe(ads.WildcardSubscription, h)
+		}
+
+		for range writers {
+			names := slices.Clone(entryNames)
+			shuffle := func() []string {
+				rand.Shuffle(len(names), func(i, j int) {
+					names[i], names[j] = names[j], names[i]
+				})
+				return names
+			}
+			go func() {
+				defer writesDone.Done()
+				for range count {
+					for _, name := range shuffle() {
+						c.Set(name, "1", new(Timestamp), time.Time{})
+					}
+				}
+			}()
+		}
+		go func() {
+			writesDone.Wait()
+			for _, name := range entryNames {
+				c.Set(name, doneVersion, new(Timestamp), time.Time{})
+			}
+		}()
+
+		readsDone.Wait()
+	})
+	// This tests subscribing to a collection that is currently being updated.
+	t.Run("subscribe", func(t *testing.T) {
+		c := newCache()
+
+		stop := make(chan struct{})
+		t.Cleanup(func() { close(stop) })
+
+		for i := range 1 {
+			name := prefix + strconv.Itoa(i)
+			go func() {
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					c.Set(name, "", new(Timestamp), noTime)
+					time.Sleep(time.Nanosecond)
+					c.Clear(name, noTime)
+				}
+			}()
+		}
+		h := testutils.NewSubscriptionHandler[*Timestamp](func(string, *ads.Resource[*Timestamp], ads.SubscriptionMetadata) {})
+
+		// 1000 chosen arbitrarily, can be increased to increase likelihood of race condition, but the test
+		// will take longer to run.
+		for range 1000 {
+			c.Subscribe(prefix+ads.WildcardSubscription, h)
+		}
+	})
+	// This tests multiple subscribers all subscribing at once.
+	t.Run("concurrent subscriptions", func(t *testing.T) {
+		c := newCache()
+
+		const (
+			entries     = 100
+			subscribers = 100
+		)
+
+		for i := range entries {
+			name := prefix + strconv.Itoa(i)
+			c.Set(name, "", Now(), noTime)
+		}
+
+		var done sync.WaitGroup
+		done.Add(subscribers)
+
+		// Set to true if inFlight is greater than one.
+		var multipleInFlight atomic.Bool
+		// Incremented when the Subscription loop starts, and decremented when it ends. If only one
+		// subscriber can go through the elements of a glob collection at once, then this will never be
+		// greater than once, and multipleInFlight will therefore never be set to true, failing the test.
+		var inFlight atomic.Int32
+
+		for range subscribers {
+			go func() {
+				defer done.Done()
+				var remainingEntries atomic.Int32
+				remainingEntries.Add(entries)
+				handlerFunc := func(string, *ads.Resource[*Timestamp], ads.SubscriptionMetadata) {
+					switch remainingEntries.Add(-1) {
+					case entries - 1:
+						if inFlight.Add(1) > 1 {
+							multipleInFlight.Store(true)
+						}
+					case 0:
+						inFlight.Add(-1)
+					}
+				}
+
+				c.Subscribe(prefix+ads.WildcardSubscription, testutils.NewSubscriptionHandler[*Timestamp](handlerFunc))
+			}()
+		}
+
+		done.Wait()
+		require.Equal(t, int32(0), inFlight.Load())
+		require.True(t, multipleInFlight.Load())
 	})
 }

@@ -211,7 +211,9 @@ func (s *ADSServer) StreamAggregatedResources(stream ads.SotWStream) (err error)
 		},
 	}
 
-	return h.loop()
+	err = h.loop()
+	slog.DebugContext(h.streamCtx, "Closing stream", "err", err)
+	return err
 }
 
 // DeltaAggregatedResources is the implementation of the delta/incremental variant of the ADS
@@ -245,7 +247,9 @@ func (s *ADSServer) DeltaAggregatedResources(stream ads.DeltaStream) (err error)
 		},
 	}
 
-	return h.loop()
+	err = h.loop()
+	slog.DebugContext(h.streamCtx, "Closing stream", "err", err)
+	return err
 }
 
 type adsDiscoveryRequest interface {

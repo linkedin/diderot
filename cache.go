@@ -162,9 +162,8 @@ func NewPrioritizedCache[T proto.Message](prioritySlots int) []Cache[T] {
 func newCache[T proto.Message](prioritySlots int) *cache[T] {
 	ref := TypeOf[T]()
 	return &cache[T]{
-		typeReference:  ref,
-		trimmedTypeURL: ref.TrimmedURL(),
-		prioritySlots:  prioritySlots,
+		typeReference: ref,
+		prioritySlots: prioritySlots,
 	}
 }
 
@@ -179,9 +178,6 @@ type cache[T proto.Message] struct {
 	// This is the type of each resource in this cache. Set and SetResource guarantee that all insertions
 	// in this cache satisfy this invariant.
 	typeReference TypeReference[T]
-	// The typeURL of the resources in this cache, without the leading "type.googleapis.com/". Used for
-	// resource URNs which do not include this prefix.
-	trimmedTypeURL string
 	// This resourceMap maps the resource's name to its corresponding WatchableValue.
 	resources internal.ResourceMap[string, *internal.WatchableValue[T]]
 	// The number of slots watchableValue instances should be created with (see NewPrioritizedCache for
@@ -204,7 +200,7 @@ func (c *cache[T]) IsSubscribedTo(name string, handler ads.SubscriptionHandler[T
 		return true
 	}
 
-	if gcURL, err := ads.ParseGlobCollectionURL(name, c.trimmedTypeURL); err == nil {
+	if gcURL, err := ads.ParseGlobCollectionURL[T](name); err == nil {
 		return c.globCollections.IsSubscribed(gcURL, handler)
 	}
 
@@ -228,13 +224,27 @@ func (c *cache[T]) Subscribe(name string, handler ads.SubscriptionHandler[T]) {
 			})
 			return true
 		})
-	} else if gcURL, err := ads.ParseGlobCollectionURL(name, c.trimmedTypeURL); err == nil {
+	} else if gcURL, err := ads.ParseGlobCollectionURL[T](name); err == nil {
 		c.globCollections.Subscribe(gcURL, handler)
 	} else {
 		c.createOrModifyEntry(name, func(name string, value *internal.WatchableValue[T]) {
 			value.Subscribe(handler)
 		})
 	}
+}
+
+// parseGlobCollectionURN checks if the given name is a valid glob collection URN. Note: by
+// definition, a URN is not a URL! Therefore, if the name ends with /*, this function will return an
+// error. This should be used when setting or clearing individual members of a glob collection, as it
+// is meaningless to "set" an entire glob collection. Similarly, clearing an entire glob collection
+// by calling [RawCache.Clear] with the corresponding glob collection URL is not supported, and is
+// effectively a noop.
+func parseGlobCollectionURN[T proto.Message](name string) (ads.GlobCollectionURL, error) {
+	gcURL, resource, err := ads.ParseGlobCollectionURN[T](name)
+	if err != nil || resource == ads.WildcardSubscription {
+		return ads.GlobCollectionURL{}, ads.ErrInvalidGlobCollectionURI
+	}
+	return gcURL, nil
 }
 
 // createOrModifyEntry executes the given function on the value of that name after ensuring that it exists in the map.
@@ -245,7 +255,7 @@ func (c *cache[T]) createOrModifyEntry(name string, f func(name string, value *i
 			v := internal.NewValue[T](name, c.prioritySlots)
 			v.SubscriberSets[internal.WildcardSubscription] = &c.wildcardSubscribers
 
-			if gcURL, err := ads.ExtractGlobCollectionURLFromResourceURN(name, c.trimmedTypeURL); err == nil {
+			if gcURL, err := parseGlobCollectionURN[T](name); err == nil {
 				c.globCollections.PutValueInCollection(gcURL, v)
 			}
 
@@ -262,7 +272,7 @@ func (c *cache[T]) deleteEntryIfNilAndNoSubscribers(name string) {
 	c.resources.DeleteIf(name, func(name string, value *internal.WatchableValue[T]) bool {
 		hasNoExplicitSubscribers := value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
 		if value.Read() == nil && hasNoExplicitSubscribers {
-			if gcURL, err := ads.ExtractGlobCollectionURLFromResourceURN(name, c.trimmedTypeURL); err == nil {
+			if gcURL, err := parseGlobCollectionURN[T](name); err == nil {
 				c.globCollections.RemoveValueFromCollection(gcURL, value)
 			}
 			return true
@@ -291,7 +301,7 @@ func (c *cache[T]) unsubscribe(name string, handler ads.SubscriptionHandler[T]) 
 func (c *cache[T]) Unsubscribe(name string, handler ads.SubscriptionHandler[T]) {
 	if name == ads.WildcardSubscription {
 		c.wildcardSubscribers.Unsubscribe(handler)
-	} else if gcURL, err := ads.ParseGlobCollectionURL(name, c.trimmedTypeURL); err == nil {
+	} else if gcURL, err := ads.ParseGlobCollectionURL[T](name); err == nil {
 		c.globCollections.Unsubscribe(gcURL, handler)
 	} else {
 		c.unsubscribe(name, handler)

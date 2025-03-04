@@ -650,10 +650,10 @@ func TestSubscriptionManagerSubscriptions(t *testing.T) {
 	}
 }
 
-type mockResourceLocator func(typeURL, resourceName string) func()
+type mockResourceLocator func(typeURL, resourceName string, h ads.RawSubscriptionHandler) func()
 
-func (m mockResourceLocator) Subscribe(_ context.Context, typeURL, resourceName string, _ ads.RawSubscriptionHandler) func() {
-	return m(typeURL, resourceName)
+func (m mockResourceLocator) Subscribe(_ context.Context, typeURL, resourceName string, h ads.RawSubscriptionHandler) func() {
+	return m(typeURL, resourceName, h)
 }
 
 func TestImplicitWildcardSubscription(t *testing.T) {
@@ -664,7 +664,7 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 	newMockLocator := func(t *testing.T) (l mockResourceLocator, wildcardSub, fooSub chan struct{}) {
 		wildcardSub = make(chan struct{}, 1)
 		fooSub = make(chan struct{}, 1)
-		l = func(actualTypeURL, resourceName string) func() {
+		l = func(actualTypeURL, resourceName string, _ ads.RawSubscriptionHandler) func() {
 			require.Equal(t, typeURL, actualTypeURL)
 			switch resourceName {
 			case ads.WildcardSubscription:
@@ -843,7 +843,7 @@ func TestSubscriptionManagerUnsubscribeAll(t *testing.T) {
 
 		var wg sync.WaitGroup
 
-		l := mockResourceLocator(func(_, resourceName string) func() {
+		l := mockResourceLocator(func(_, resourceName string, _ ads.RawSubscriptionHandler) func() {
 			wg.Done()
 			return func() {
 				wg.Done()
@@ -866,7 +866,7 @@ func TestSubscriptionManagerUnsubscribeAll(t *testing.T) {
 	t.Run("on context expiry", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		var wg sync.WaitGroup
-		l := mockResourceLocator(func(_, _ string) func() {
+		l := mockResourceLocator(func(_, _ string, _ ads.RawSubscriptionHandler) func() {
 			wg.Done()
 			return func() {
 				wg.Done()

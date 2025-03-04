@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"iter"
 	"maps"
 	"slices"
 )
@@ -41,4 +42,8 @@ func (s Set[T]) Remove(t T) bool {
 
 func (s Set[T]) String() string {
 	return fmt.Sprint(slices.Collect(maps.Keys(s)))
+}
+
+func (s Set[T]) Values() iter.Seq[T] {
+	return maps.Keys(s)
 }

@@ -11,7 +11,7 @@ import (
 
 	discoveryv3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/linkedin/diderot/ads"
-	"github.com/linkedin/diderot/internal/client"
+	internal "github.com/linkedin/diderot/internal/client"
 	"github.com/linkedin/diderot/internal/utils"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

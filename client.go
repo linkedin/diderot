@@ -39,15 +39,6 @@ func NewADSClient(conn *grpc.ClientConn, node *ads.Node, opts ...ADSClientOption
 			initialReconnectBackoff:   defaultInitialReconnectBackoff,
 			maxReconnectBackoff:       defaultMaxReconnectBackoff,
 			responseChunkingSupported: defaultResponseChunkingSupported,
-			contextProvider:           context.Background,
-			newDeltaClient: func(
-				ctx context.Context,
-				conn *grpc.ClientConn,
-				opts ...grpc.CallOption,
-			) (deltaClient, error) {
-				return discoveryv3.NewAggregatedDiscoveryServiceClient(conn).
-					DeltaAggregatedResources(ctx, opts...)
-			},
 		},
 	}
 
@@ -64,9 +55,6 @@ type options struct {
 	initialReconnectBackoff   time.Duration
 	maxReconnectBackoff       time.Duration
 	responseChunkingSupported bool
-	callOptions               []grpc.CallOption
-	contextProvider           func() context.Context
-	newDeltaClient            func(ctx context.Context, conn *grpc.ClientConn, opts ...grpc.CallOption) (deltaClient, error)
 }
 
 // WithReconnectBackoff provides backoff configuration when reconnecting to the xDS backend after a
@@ -85,20 +73,6 @@ func WithReconnectBackoff(initialBackoff, maxBackoff time.Duration) ADSClientOpt
 func WithResponseChunkingSupported(supported bool) ADSClientOption {
 	return func(o *options) {
 		o.responseChunkingSupported = supported
-	}
-}
-
-func withContextProvider(f func() context.Context) ADSClientOption {
-	return func(o *options) {
-		o.contextProvider = f
-	}
-}
-
-func withNewDeltaClient(
-	f func(ctx context.Context, conn *grpc.ClientConn, opts ...grpc.CallOption) (deltaClient, error),
-) ADSClientOption {
-	return func(o *options) {
-		o.newDeltaClient = f
 	}
 }
 
@@ -150,6 +124,13 @@ func getResourceHandler[T proto.Message](c *ADSClient) *internal.ResourceHandler
 	} else {
 		return hAny.(*internal.ResourceHandler[T])
 	}
+}
+
+func (c *ADSClient) getResourceHandler(typeURL string) (internal.RawResourceHandler, bool) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	h, ok := c.handlers[typeURL]
+	return h, ok
 }
 
 // notifyNewSubscription signals to the subscription loop that a new subscription was added.
@@ -243,9 +224,7 @@ func (c *ADSClient) subscriptionLoop(stream deltaClient, responsesCh <-chan []*a
 				return err
 			}
 		case responses := <-responsesCh:
-			c.lock.Lock()
-			h, ok := c.handlers[responses[0].TypeUrl]
-			c.lock.Unlock()
+			h, ok := c.getResourceHandler(responses[0].TypeUrl)
 			if !ok {
 				for _, res := range responses {
 					err := c.sendACKOrNACK(
@@ -254,9 +233,11 @@ func (c *ADSClient) subscriptionLoop(stream deltaClient, responsesCh <-chan []*a
 						fmt.Errorf("received response with unknown type: %q", res.TypeUrl),
 					)
 					if err != nil {
+						slog.WarnContext(stream.Context(), "ADS stream closed", "err", err)
 						return err
 					}
 				}
+				continue
 			}
 
 			// Always ACK all but the last response. Errors will only be reported back to the server once all
@@ -320,7 +301,8 @@ func (c *ADSClient) newStream() (deltaClient, <-chan []*ads.DeltaDiscoveryRespon
 			var resSlice []*ads.DeltaDiscoveryResponse
 
 			if c.responseChunkingSupported {
-				resSlice = append(chunkedResponses[res.TypeUrl], res)
+				resSlice = chunkedResponses[res.TypeUrl]
+				resSlice = append(resSlice, res)
 				chunkedResponses[res.TypeUrl] = resSlice
 				if c.responseChunkingSupported {
 					if remainingChunks, _ := ads.ParseRemainingChunksFromNonce(res.Nonce); remainingChunks != 0 {
@@ -354,7 +336,8 @@ type deltaClient interface {
 func (c *ADSClient) getDeltaClient() (deltaClient, error) {
 	backoff := c.initialReconnectBackoff
 	for {
-		delta, err := c.newDeltaClient(c.contextProvider(), c.conn)
+		delta, err := discoveryv3.NewAggregatedDiscoveryServiceClient(c.conn).
+			DeltaAggregatedResources(context.Background())
 		if err != nil {
 			// This only occurs if c.conn was closed since context.Background() is used to create the stream.
 			if st := status.Convert(err); st.Code() == codes.Canceled {

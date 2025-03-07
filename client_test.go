@@ -12,8 +12,12 @@ import (
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/linkedin/diderot/ads"
+	"github.com/linkedin/diderot/internal/utils"
 	"github.com/linkedin/diderot/testutils"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -27,65 +31,53 @@ func TestADSClient(t *testing.T) {
 
 	ts := testutils.NewTestGRPCServer(t)
 
-	timestampCache := NewCache[*Timestamp]()
-
-	s := NewADSServer(mockResourceLocator(func(typeURL, resourceName string, h ads.RawSubscriptionHandler) func() {
-		var c RawCache
-		switch typeURL {
-		case timestampCache.Type().URL():
-			c = timestampCache
-		default:
-			h.Notify(resourceName, nil, ads.SubscriptionMetadata{})
-			return func() {}
-		}
-		Subscribe(c, resourceName, h)
-		return func() {
-			Unsubscribe(c, resourceName, h)
-		}
-	}))
-	discovery.RegisterAggregatedDiscoveryServiceServer(ts.Server, s)
+	server := newMockServer(t)
+	discovery.RegisterAggregatedDiscoveryServiceServer(ts.Server, server)
 	ts.Start()
 
-	acceptStream, providerOpt := newContextProvider(t)
-
-	client := NewADSClient(ts.Dial(), &ads.Node{Id: "test"}, providerOpt)
+	client := NewADSClient(ts.Dial(), &ads.Node{Id: "test"})
 	fooH := make(testutils.ChanSubscriptionHandler[*Timestamp], 1)
 	foo := ads.NewResource[*Timestamp]("foo", "0", Now())
-	Watch[*Timestamp](client, foo.Name, ChanWatcher[*Timestamp](fooH))
+	Watch(client, foo.Name, ChanWatcher[*Timestamp](fooH))
 
 	// The stream has not yet been established, no updates should be received.
 	checkNoUpdate(t, fooH)
 
 	// Accept a new stream
-	closeStream := acceptStream()
+	closeStream := server.accept()
 
-	// The resource does not exist in the cache, the first update should be a deletion.
+	// The resource does not initially exist, the first update should be a deletion.
+	server.expectSubscriptions(foo.Name)
+	nonce := server.respondDeletes(0, foo.Name)
 	fooH.WaitForDelete(t, foo.Name)
+	server.expectACK(nonce)
 
-	// Set foo in the cache, and wait for the creation update
-	timestampCache.SetResource(foo, time.Time{})
+	// Set foo, and wait for the creation update
+	nonce = server.respondUpdates(0, foo)
 	fooH.WaitForUpdate(t, foo)
+	server.expectACK(nonce)
 
 	closeStream()
-	closeStream = acceptStream()
+	closeStream = server.accept()
 	// Closing and reopening the stream makes the client reconnect, but since foo hasn't changed, nothing
 	// should happen.
+	server.expectSubscriptions(foo.Name)
+	nonce = server.respondUpdates(0, foo)
 	checkNoUpdate(t, fooH)
+	server.expectACK(nonce)
 
-	// Disconnect the client, update foo and expect a notification on reconnect.
+	// Disconnect the client, foo is updated during disconnect so expect a notification
 	closeStream()
-	foo = timestampCache.Set(foo.Name, "1", Now(), time.Time{})
-	closeStream = acceptStream()
+	foo = ads.NewResource(foo.Name, "1", Now())
+	closeStream = server.accept()
+	server.expectSubscriptions(foo.Name)
+	nonce = server.respondUpdates(0, foo)
 	fooH.WaitForUpdate(t, foo)
-
-	// Set bar, nothing is currently subscribed to bar, least of all fooH so no updates should be received.
-	bar := ads.NewResource[*Timestamp]("bar", "0", Now())
-	timestampCache.SetResource(bar, time.Time{})
-	checkNoUpdate(t, fooH)
+	server.expectACK(nonce)
 
 	wildcardH := make(testutils.ChanSubscriptionHandler[*Timestamp], 2)
 	var wildcardExpectedCount atomic.Int32
-	Watch[*Timestamp](client, ads.WildcardSubscription, &FuncWatcher[*Timestamp]{
+	Watch(client, ads.WildcardSubscription, &FuncWatcher[*Timestamp]{
 		notify: func(resources iter.Seq2[string, *ads.Resource[*Timestamp]]) error {
 			require.Len(t, maps.Collect(resources), int(wildcardExpectedCount.Load()))
 			for name, resource := range resources {
@@ -98,9 +90,21 @@ func TestADSClient(t *testing.T) {
 		},
 	})
 
+	server.expectSubscriptions(ads.WildcardSubscription)
+	bar := ads.NewResource[*Timestamp]("bar", "0", Now())
+	// Respond in multiple chunks, to test that those are handled correctly
+	chunkNonce1 := server.respondUpdates(1, foo)
+	// No update expected after first chunk
+	checkNoUpdate(t, wildcardH)
+	// As soon as the second chunk arrives, an update is expected, so update the expected count before
+	// sending the response.
+	wildcardExpectedCount.Store(2)
+	chunkNonce2 := server.respondUpdates(0, bar)
+	server.expectACK(chunkNonce1)
+	server.expectACK(chunkNonce2)
+
 	// Expect a notification for foo and bar for wildcardH, but since fooH has already seen that version
 	// of foo, it should not receive an update.
-	wildcardExpectedCount.Store(2)
 	wildcardH.WaitForNotifications(t,
 		testutils.ExpectUpdate(foo),
 		testutils.ExpectUpdate(bar),
@@ -109,27 +113,30 @@ func TestADSClient(t *testing.T) {
 
 	// Clear foo, expect a deletion on fooH and the wildcard subscriber.
 	wildcardExpectedCount.Store(1)
-	timestampCache.Clear(foo.Name, time.Time{})
+	nonce = server.respondDeletes(0, foo.Name)
+	server.expectACK(nonce)
 	fooH.WaitForDelete(t, foo.Name)
 	wildcardH.WaitForDelete(t, foo.Name)
 
 	// Create new glob collection entries, which the wildcard subscriber should receive.
 	wildcardExpectedCount.Store(1)
 	gcURL := ads.NewGlobCollectionURL[*Timestamp]("", "collection", nil)
-	fooGlob := timestampCache.Set(gcURL.MemberURN("foo"), "0", Now(), time.Time{})
-	wildcardH.WaitForNotifications(t,
-		testutils.ExpectUpdate(fooGlob),
-	)
-	barGlob := timestampCache.Set(gcURL.MemberURN("bar"), "0", Now(), time.Time{})
-	wildcardH.WaitForNotifications(t,
-		testutils.ExpectUpdate(barGlob),
-	)
+	fooGlob := ads.NewResource(gcURL.MemberURN("foo"), "0", Now())
+	nonce = server.respondUpdates(0, fooGlob)
+	server.expectACK(nonce)
+	wildcardH.WaitForNotifications(t, testutils.ExpectUpdate(fooGlob))
+
+	barGlob := ads.NewResource(gcURL.MemberURN("bar"), "0", Now())
+	nonce = server.respondUpdates(0, barGlob)
+	server.expectACK(nonce)
+	wildcardH.WaitForNotifications(t, testutils.ExpectUpdate(barGlob))
 
 	// Subscribe to the glob collection. expecting an update for fooGlob and barGlob.
 	globH := make(testutils.ChanSubscriptionHandler[*Timestamp], 2)
 	var globExpectedCount atomic.Int32
-	globExpectedCount.Store(2)
-	Watch[*Timestamp](client, gcURL.String(), &FuncWatcher[*Timestamp]{
+	// Because the resources are already known thanks to the wildcard, this expects a notification
+	// immediately, before the subscription is even sent.
+	Watch(client, gcURL.String(), &FuncWatcher[*Timestamp]{
 		notify: func(resources iter.Seq2[string, *ads.Resource[*Timestamp]]) error {
 			require.Len(t, maps.Collect(resources), int(globExpectedCount.Load()))
 			for name, resource := range resources {
@@ -141,15 +148,21 @@ func TestADSClient(t *testing.T) {
 			return nil
 		},
 	})
+	server.expectSubscriptions(gcURL.String())
+	globExpectedCount.Store(2)
+	nonce = server.respondUpdates(0, fooGlob, barGlob)
+	server.expectACK(nonce)
 	globH.WaitForNotifications(t,
 		testutils.ExpectUpdate(fooGlob),
 		testutils.ExpectUpdate(barGlob),
 	)
+	globExpectedCount.Store(0)
 
 	// Clear fooGlob, expect deletions for it.
 	wildcardExpectedCount.Store(1)
 	globExpectedCount.Store(1)
-	timestampCache.Clear(fooGlob.Name, time.Time{})
+	nonce = server.respondDeletes(0, fooGlob.Name)
+	server.expectACK(nonce)
 	wildcardH.WaitForDelete(t, fooGlob.Name)
 	globH.WaitForDelete(t, fooGlob.Name)
 
@@ -160,8 +173,19 @@ func TestADSClient(t *testing.T) {
 	// same is true for the wildcard subscription: the client will not receive an explicit notification
 	// that barGlob has disappeared.
 	closeStream()
-	timestampCache.Clear(barGlob.Name, time.Time{})
-	closeStream = acceptStream()
+	closeStream = server.accept()
+	server.expectSubscriptions(foo.Name, ads.WildcardSubscription, gcURL.String())
+
+	nonce = respond[*Timestamp](
+		server,
+		// The only remaining resource is bar
+		[]*ads.Resource[*Timestamp]{bar},
+		// These are explicitly subscribed to but do not exist, so explicit removals are expected
+		[]string{foo.Name, gcURL.String()},
+		0,
+	)
+	server.respondUpdates(0, bar)
+	server.expectACK(nonce)
 	globH.WaitForDelete(t, barGlob.Name)
 	wildcardH.WaitForDelete(t, barGlob.Name)
 
@@ -169,15 +193,19 @@ func TestADSClient(t *testing.T) {
 	// the client is offline, subscribing to bar should deliver the notification.
 	closeStream()
 	barH := make(testutils.ChanSubscriptionHandler[*Timestamp], 1)
-	Watch[*Timestamp](client, bar.Name, ChanWatcher[*Timestamp](barH))
+	Watch(client, bar.Name, ChanWatcher[*Timestamp](barH))
 	barH.WaitForUpdate(t, bar)
-
-	closeStream = acceptStream()
+	closeStream = server.accept()
 	// There should be an explicit subscription sent, but because bar is already known, no further
 	// updates should be received.
+	server.expectSubscriptions(foo.Name, bar.Name, ads.WildcardSubscription, gcURL.String())
+	nonce = server.respondUpdates(0, bar)
+	server.expectACK(nonce)
 	checkNoUpdate(t, barH)
 
-	timestampCache.Clear(bar.Name, time.Time{})
+	// Delete bar, the final resource
+	nonce = server.respondDeletes(0, bar.Name)
+	server.expectACK(nonce)
 
 	barH.WaitForDelete(t, bar.Name)
 	wildcardH.WaitForDelete(t, bar.Name)
@@ -185,28 +213,17 @@ func TestADSClient(t *testing.T) {
 	// Disconnect again to test what happens when Watch is called while offline for glob and wildcards.
 	closeStream()
 	allResources := new(map[string]*ads.Resource[*Timestamp])
-	Watch[*Timestamp](client, ads.WildcardSubscription, OnceWatcher[*Timestamp](allResources))
+	Watch(client, ads.WildcardSubscription, OnceWatcher(allResources))
 	// This should be immediately ready, as data has been received and far as the client knows, there are
 	// no resources.
+	require.NotNil(t, *allResources)
 	require.Empty(t, *allResources)
 
 	// Same behavior expected for glob
 	allGlobResource := new(map[string]*ads.Resource[*Timestamp])
-	Watch[*Timestamp](client, gcURL.String(), OnceWatcher[*Timestamp](allGlobResource))
+	Watch(client, gcURL.String(), OnceWatcher(allGlobResource))
+	require.NotNil(t, *allGlobResource)
 	require.Empty(t, *allGlobResource)
-}
-
-func newContextProvider(t *testing.T) (acceptStream func() context.CancelFunc, provider ADSClientOption) {
-	contextCancels := make(chan context.CancelFunc)
-	provider = withContextProvider(func() context.Context {
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
-		contextCancels <- cancel
-		return ctx
-	})
-	return func() context.CancelFunc {
-		return <-contextCancels
-	}, provider
 }
 
 type FuncWatcher[T proto.Message] struct {
@@ -242,4 +259,119 @@ func OnceWatcher[T proto.Message](m *map[string]*ads.Resource[T]) Watcher[T] {
 		})
 		return nil
 	}}
+}
+
+type mockServer struct {
+	t         *testing.T
+	requests  chan *ads.DeltaDiscoveryRequest
+	responses chan *ads.DeltaDiscoveryResponse
+	kill      chan chan struct{}
+	group     errgroup.Group
+}
+
+func newMockServer(t *testing.T) *mockServer {
+	ms := &mockServer{
+		t:         t,
+		requests:  make(chan *ads.DeltaDiscoveryRequest),
+		responses: make(chan *ads.DeltaDiscoveryResponse),
+		kill:      make(chan chan struct{}),
+	}
+	return ms
+}
+
+func (ms *mockServer) StreamAggregatedResources(ads.SotWStream) error {
+	return status.Errorf(codes.Unimplemented, "not implemented")
+}
+
+func (ms *mockServer) DeltaAggregatedResources(stream ads.DeltaStream) error {
+	kill := <-ms.kill
+	ms.group.Go(func() error {
+		for {
+			select {
+			case res := <-ms.responses:
+				ms.t.Logf("Responding: %+v", res)
+				err := stream.Send(res)
+				if err != nil {
+					return nil
+				}
+			case <-stream.Context().Done():
+				return nil
+			}
+		}
+	})
+	ms.group.Go(func() error {
+		for {
+			req, err := stream.Recv()
+			if err != nil {
+				return nil
+			}
+			ms.t.Logf("Received request: %+v", req)
+			select {
+			case ms.requests <- req:
+			case <-stream.Context().Done():
+				return nil
+			}
+		}
+	})
+	<-kill
+	ms.t.Log("Stream killed")
+	return context.Canceled
+}
+
+func (ms *mockServer) accept() context.CancelFunc {
+	ch := make(chan struct{})
+	ms.kill <- ch
+	return sync.OnceFunc(func() {
+		close(ch)
+		require.NoError(ms.t, ms.group.Wait())
+	})
+}
+
+func (ms *mockServer) respondUpdates(
+	remainingChunks int,
+	resources ...*ads.Resource[*Timestamp],
+) string {
+	return respond[*Timestamp](ms, resources, nil, remainingChunks)
+}
+
+func (ms *mockServer) respondDeletes(
+	remainingChunks int,
+	removedResources ...string,
+) string {
+	return respond[*Timestamp](ms, nil, removedResources, remainingChunks)
+}
+
+func respond[T proto.Message](
+	ms *mockServer,
+	resources []*ads.Resource[T],
+	removedResources []string,
+	remainingChunks int,
+) string {
+	var marshaled []*ads.RawResource
+	for _, resource := range resources {
+		raw, err := resource.Marshal()
+		require.NoError(ms.t, err)
+		marshaled = append(marshaled, raw)
+	}
+	nonce := utils.NewNonce(remainingChunks)
+	ms.responses <- &ads.DeltaDiscoveryResponse{
+		Resources:        marshaled,
+		TypeUrl:          utils.GetTypeURL[T](),
+		RemovedResources: removedResources,
+		Nonce:            nonce,
+	}
+	return nonce
+}
+
+func (ms *mockServer) expectACK(nonce string) {
+	req := <-ms.requests
+	require.Equal(ms.t, utils.GetTypeURL[*Timestamp](), req.TypeUrl)
+	require.Equal(ms.t, nonce, req.ResponseNonce)
+}
+
+func (ms *mockServer) expectSubscriptions(subscriptions ...string) {
+	req := <-ms.requests
+	require.Equal(ms.t, utils.GetTypeURL[*Timestamp](), req.TypeUrl)
+	require.Empty(ms.t, req.ResponseNonce)
+	require.ElementsMatch(ms.t, subscriptions, req.ResourceNamesSubscribe)
 }

@@ -60,7 +60,9 @@ func (h *ResourceHandler[T]) resolve(in iter.Seq[string]) iter.Seq2[string, *ads
 }
 
 func (h *ResourceHandler[T]) resolveSingle(name string) iter.Seq2[string, *ads.Resource[T]] {
-	return func(yield func(string, *ads.Resource[T]) bool) { yield(name, h.resources[name]) }
+	return func(yield func(string, *ads.Resource[T]) bool) {
+		yield(name, h.resources[name])
+	}
 }
 
 // setResource updates the map of known resources. Returns a boolean indicating whether the resource

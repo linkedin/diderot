@@ -151,6 +151,9 @@ func (h *ResourceHandler[T]) AddWatcher(name string, w Watcher[T]) bool {
 
 func (h *ResourceHandler[T]) AllSubscriptions() iter.Seq[string] {
 	return func(yield func(string) bool) {
+		h.lock.Lock()
+		defer h.lock.Unlock()
+
 		for k := range h.subscriptions {
 			if !yield(k) {
 				return

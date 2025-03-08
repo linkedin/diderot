@@ -100,10 +100,11 @@ type Watcher[T proto.Message] interface {
 	Notify(resources iter.Seq2[string, *ads.Resource[T]]) error
 }
 
-// Watch functions much like [Cache.Subscribe]. The given [Watcher] will be notified whenever a
-// resource is updated. If the requested resource name is not already subscribed to, this will
-// trigger a new subscription for the client. If a resource is already known (for example from a
-// previous existing subscription), the watcher will be immediately notified.
+// Watch registers the given watcher in the given client, triggering a subscription (if necessary)
+// for the given resource name such that the [Watcher] will be notified whenever the resource is
+// updated. If a resource is already known (for example from a previous existing subscription), the
+// watcher will be immediately notified. Glob or wildcard subscriptions are supported, and
+// [Watcher.Notify] will be invoked with a sequence that iterates over all the updated resources.
 func Watch[T proto.Message](c *ADSClient, name string, watcher Watcher[T]) {
 	if getResourceHandler[T](c).AddWatcher(name, watcher) {
 		c.notifyNewSubscription()
@@ -141,6 +142,8 @@ func (c *ADSClient) notifyNewSubscription() {
 	}
 }
 
+// This is a type alias for the set of resources the client is subscribed to. The key is the typeURL
+// and the value is the set of resource names subscribed to within that type.
 type subscriptionSet map[string]utils.Set[string]
 
 // getPendingSubscriptions iterates over all the subscriptions returned by invoking
@@ -174,6 +177,8 @@ func (c *ADSClient) getPendingSubscriptions(registeredSubscriptions subscription
 // closed.
 func (c *ADSClient) loop() {
 	for {
+		// See documentation on subscriptionLoop. It returns when the stream ends, so a fresh stream needs to
+		// be created every time.
 		stream, responses, err := c.newStream()
 		if err != nil {
 			return
@@ -184,9 +189,12 @@ func (c *ADSClient) loop() {
 	}
 }
 
-// subscriptionLoop is the critical logic loop for the client. It polls the given response channel,
-// notifying watchers when new responses come in. It also waits for any new subscriptions to be
-// registered, and sends them to the server. This returns whenever the stream ends.
+// subscriptionLoop is the critical logic loop for the client. It polls the given responses channel,
+// notifying watchers when new responses come in. Each slice returned by the responses channel is
+// expected to contain responses that are all for the same typeURL. In most cases, the slice will
+// only have one response in it, but if response chunking is supported, the slice will have all the
+// response chunks in it. It also waits for any new subscriptions to be registered, and sends them to
+// the server. This returns whenever the stream ends.
 func (c *ADSClient) subscriptionLoop(stream deltaClient, responsesCh <-chan []*ads.DeltaDiscoveryResponse) error {
 	registeredSubscriptions := make(subscriptionSet)
 
@@ -304,13 +312,13 @@ func (c *ADSClient) newStream() (deltaClient, <-chan []*ads.DeltaDiscoveryRespon
 				resSlice = chunkedResponses[res.TypeUrl]
 				resSlice = append(resSlice, res)
 				chunkedResponses[res.TypeUrl] = resSlice
-				if c.responseChunkingSupported {
-					if remainingChunks, _ := ads.ParseRemainingChunksFromNonce(res.Nonce); remainingChunks != 0 {
-						continue
-					} else {
-						delete(chunkedResponses, res.TypeUrl)
-					}
+				if remainingChunks, _ := ads.ParseRemainingChunksFromNonce(res.Nonce); remainingChunks != 0 {
+					continue
+				} else {
+					delete(chunkedResponses, res.TypeUrl)
 				}
+			} else {
+				resSlice = []*ads.DeltaDiscoveryResponse{res}
 			}
 
 			select {

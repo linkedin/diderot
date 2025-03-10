@@ -2,8 +2,9 @@ package diderot
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"iter"
-	"log/slog"
 	"maps"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -27,15 +29,99 @@ type Timestamp = timestamppb.Timestamp
 var Now = timestamppb.Now
 
 func TestADSClient(t *testing.T) {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
+	tests := []struct {
+		chunkingEnabled bool
+	}{
+		{
+			chunkingEnabled: false,
+		},
+		{
+			chunkingEnabled: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("flow/chunkingEnabled=%v", test.chunkingEnabled), func(t *testing.T) {
+			testADSClientFlow(t, test.chunkingEnabled)
+		})
+	}
 
-	ts := testutils.NewTestGRPCServer(t)
+	// Check that the client NACKs a response for a type that was never subscribed to.
+	t.Run("invalid type", func(t *testing.T) {
+		ts, server := setUpTest(t)
 
-	server := newMockServer(t)
+		client := NewADSClient(ts.Dial(), &ads.Node{Id: "test"})
+		Watch(client, ads.WildcardSubscription, &FuncWatcher[*Timestamp]{
+			notify: func(resources iter.Seq2[string, *ads.Resource[*Timestamp]]) error {
+				require.FailNow(t, "Should not be called")
+				return nil
+			},
+		})
+
+		server.accept()
+
+		server.expectSubscriptions(ads.WildcardSubscription)
+
+		nonce := respond[*durationpb.Duration](server, []*ads.Resource[*durationpb.Duration]{
+			ads.NewResource[*durationpb.Duration]("test", "0", durationpb.New(time.Minute)),
+		}, nil, 0)
+
+		expectNACK[*durationpb.Duration](server, nonce, codes.InvalidArgument, utils.GetTypeURL[*durationpb.Duration]())
+	})
+
+	// Check that the client NACKs a response if a watcher returns an error.
+	t.Run("NACKs", func(t *testing.T) {
+		ts, server := setUpTest(t)
+
+		client := NewADSClient(ts.Dial(), &ads.Node{Id: "test"})
+		Watch(client, ads.WildcardSubscription, &FuncWatcher[*Timestamp]{
+			notify: func(resources iter.Seq2[string, *ads.Resource[*Timestamp]]) error {
+				return io.EOF
+			},
+		})
+
+		server.accept()
+
+		server.expectSubscriptions(ads.WildcardSubscription)
+
+		nonce := server.respondUpdates(0, ads.NewResource[*Timestamp]("foo", "0", Now()))
+
+		expectNACK[*Timestamp](server, nonce, codes.InvalidArgument, io.EOF.Error())
+	})
+
+	// Check that if the server responds with an unknown resource, it is skipped and reported, but other
+	// valid resources in the response are still parsed.
+	t.Run("unknown resource", func(t *testing.T) {
+		ts, server := setUpTest(t)
+
+		client := NewADSClient(ts.Dial(), &ads.Node{Id: "test"})
+		fooH := make(testutils.ChanSubscriptionHandler[*Timestamp], 1)
+		foo := ads.NewResource[*Timestamp]("foo", "0", Now())
+		Watch(client, foo.Name, ChanWatcher[*Timestamp](fooH))
+
+		server.accept()
+
+		server.expectSubscriptions(foo.Name)
+
+		nonce := server.respondUpdates(0, foo, ads.NewResource("bar", "0", Now()))
+
+		expectNACK[*Timestamp](server, nonce, codes.InvalidArgument, "bar")
+		fooH.WaitForUpdate(t, foo)
+	})
+}
+
+func setUpTest(t *testing.T) (ts *testutils.TestServer, server *mockServer) {
+	ts = testutils.NewTestGRPCServer(t)
+
+	server = newMockServer(t)
 	discovery.RegisterAggregatedDiscoveryServiceServer(ts.Server, server)
 	ts.Start()
+	return ts, server
+}
 
-	client := NewADSClient(ts.Dial(), &ads.Node{Id: "test"})
+func testADSClientFlow(t *testing.T, chunkingEnabled bool) {
+	ts, server := setUpTest(t)
+
+	client := NewADSClient(ts.Dial(), &ads.Node{Id: "test"}, WithResponseChunkingSupported(chunkingEnabled))
 	fooH := make(testutils.ChanSubscriptionHandler[*Timestamp], 1)
 	foo := ads.NewResource[*Timestamp]("foo", "0", Now())
 	Watch(client, foo.Name, ChanWatcher[*Timestamp](fooH))
@@ -92,16 +178,22 @@ func TestADSClient(t *testing.T) {
 
 	server.expectSubscriptions(ads.WildcardSubscription)
 	bar := ads.NewResource[*Timestamp]("bar", "0", Now())
-	// Respond in multiple chunks, to test that those are handled correctly
-	chunkNonce1 := server.respondUpdates(1, foo)
-	// No update expected after first chunk
-	checkNoUpdate(t, wildcardH)
-	// As soon as the second chunk arrives, an update is expected, so update the expected count before
-	// sending the response.
-	wildcardExpectedCount.Store(2)
-	chunkNonce2 := server.respondUpdates(0, bar)
-	server.expectACK(chunkNonce1)
-	server.expectACK(chunkNonce2)
+	if chunkingEnabled {
+		// Respond in multiple chunks, to test that those are handled correctly
+		chunkNonce1 := server.respondUpdates(1, foo)
+		// No update expected after first chunk
+		checkNoUpdate(t, wildcardH)
+		// As soon as the second chunk arrives, an update is expected, so update the expected count before
+		// sending the response.
+		wildcardExpectedCount.Store(2)
+		chunkNonce2 := server.respondUpdates(0, bar)
+		server.expectACK(chunkNonce1)
+		server.expectACK(chunkNonce2)
+	} else {
+		wildcardExpectedCount.Store(2)
+		nonce = server.respondUpdates(0, foo, bar)
+		server.expectACK(nonce)
+	}
 
 	// Expect a notification for foo and bar for wildcardH, but since fooH has already seen that version
 	// of foo, it should not receive an update.
@@ -367,6 +459,15 @@ func (ms *mockServer) expectACK(nonce string) {
 	req := <-ms.requests
 	require.Equal(ms.t, utils.GetTypeURL[*Timestamp](), req.TypeUrl)
 	require.Equal(ms.t, nonce, req.ResponseNonce)
+}
+
+func expectNACK[T proto.Message](ms *mockServer, nonce string, code codes.Code, errorContains string) {
+	req := <-ms.requests
+	require.Equal(ms.t, utils.GetTypeURL[T](), req.TypeUrl)
+	require.Equal(ms.t, nonce, req.ResponseNonce)
+	st := status.FromProto(req.GetErrorDetail())
+	require.Equal(ms.t, code, st.Code())
+	require.ErrorContains(ms.t, st.Err(), errorContains)
 }
 
 func (ms *mockServer) expectSubscriptions(subscriptions ...string) {

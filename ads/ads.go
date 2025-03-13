@@ -132,6 +132,21 @@ func (r *Resource[T]) TypeURL() string {
 	return types.APITypePrefix + string(r.Resource.ProtoReflect().Descriptor().FullName())
 }
 
+func (r *Resource[T]) Equals(other *Resource[T]) bool {
+	if r == other {
+		return true
+	}
+	if r == nil || other == nil {
+		return false
+	}
+	return r.Name == other.Name &&
+		r.Version == other.Version &&
+		proto.Equal(r.Ttl, other.Ttl) &&
+		proto.Equal(r.CacheControl, other.CacheControl) &&
+		proto.Equal(r.Metadata, other.Metadata) &&
+		proto.Equal(r.Resource, other.Resource)
+}
+
 // UnmarshalRawResource unmarshals the given RawResource and returns a Resource of the corresponding
 // type. Resource.Marshal on the returned Resource will return the given RawResource instead of
 // re-serializing the resource.

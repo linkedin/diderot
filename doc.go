@@ -71,7 +71,7 @@ This means that if resource names are [xdstp:// URNs], they will be automaticall
 corresponding glob collection, if applicable. These resources are still available for subscription
 by their full URN, but will also be available for subscription by subscribing to the parent glob
 collection. More details available at [diderot.Cache.Subscribe], [ads.ParseGlobCollectionURL] and
-[ads.ExtractGlobCollectionURLFromResourceURN].
+[ads.ParseGlobCollectionURN].
 
 [xDS spec]: https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol#how-the-client-specifies-what-resources-to-return
 [xdstp:// URNs]: https://github.com/cncf/xds/blob/main/proposals/TP1-xds-transport-next.md#uri-based-xds-resource-names

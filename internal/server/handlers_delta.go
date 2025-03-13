@@ -44,6 +44,7 @@ func newDeltaHandler(
 	send func(res *ads.DeltaDiscoveryResponse) error,
 ) *handler {
 	ds := &deltaSender{
+		ctx:          ctx,
 		typeURL:      typeURL,
 		maxChunkSize: maxChunkSize,
 		statsHandler: statsHandler,

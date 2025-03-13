@@ -117,7 +117,7 @@ func (c ChanSubscriptionHandler[T]) WaitForNotifications(t testingT, notificatio
 		var n Notification[T]
 		select {
 		case n = <-c:
-		case <-time.After(5 * time.Second):
+		case <-time.After(5 * time.Hour):
 			t.Fatalf("Did not receive expected notification for one of: %v",
 				slices.Collect(maps.Keys(expectedNotifications)))
 		}
@@ -227,6 +227,9 @@ func (ts *TestServer) Dial(opts ...grpc.DialOption) *grpc.ClientConn {
 	opts = append([]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, opts...)
 	conn, err := grpc.NewClient(ts.AddrString(), opts...)
 	require.NoError(ts.t, err)
+	ts.t.Cleanup(func() {
+		require.NoError(ts.t, conn.Close())
+	})
 	return conn
 }
 

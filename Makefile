@@ -54,6 +54,12 @@ profile_cache:
 profile_handlers:
 	$(MAKE) -B $(PROFILES)/BenchmarkHandlers.bench BENCH_PKG=./internal/server
 
+profile_typeurl:
+	$(MAKE) -B $(PROFILES)/BenchmarkGetTrimmedTypeURL.bench BENCH_PKG=ads
+
+profile_parse_glob_urn:
+	$(MAKE) -B $(PROFILES)/BenchmarkParseGlobCollectionURN.bench BENCH_PKG=ads
+
 BENCHCOUNT = 1
 BENCHTIME = 1s
 
@@ -78,8 +84,8 @@ else
 	$(error BENCH_PKG undefined)
 endif
 ifdef OPEN_PROFILES
-	go tool pprof $(BENCHBIN) $(PROFILES)/$*.cpu <<< web
-	go tool pprof $(PROFILES)/$*.mem <<< web
+	go tool pprof -http : $(BENCHBIN) $(PROFILES)/$*.cpu & \
+		go tool pprof -http : $(PROFILES)/$*.mem ; kill %1
 else
 	$(info Not opening profiles since OPEN_PROFILES is not set)
 endif

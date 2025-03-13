@@ -190,10 +190,10 @@ func (v *WatchableValue[T]) notify(modifiedAt time.Time) {
 type loopStatus byte
 
 const (
-	// notRunning means the loop has either never run, or has completed running through one cycle after
+	// completed means the loop has either never run, or has completed running through one cycle after
 	// the value has received an update. Subscribers should check the corresponding
 	// WatchableValue.lastSeenSubscriberSetVersions to see if they have already been notified.
-	notRunning = loopStatus(iota)
+	completed = loopStatus(iota)
 	// initialized means the goroutine has been started but has not yet loaded the subscriber map and updated
 	// WatchableValue.lastSeenSubscriberSetVersions.
 	initialized
@@ -262,7 +262,7 @@ func (v *WatchableValue[T]) NotifyHandlerAfterSubscription(
 }
 
 // startNotificationLoop spawns a goroutine that will notify all the subscribers to this entry of the
-// current value. If the current loopStatus is not notRunning (i.e. the goroutine from a previous
+// current value. If the current loopStatus is not completed (i.e. the goroutine from a previous
 // invocation is still running), immediately returns and does nothing. Must be invoked while holding
 // lock. If the value is updated while the subscribers are being notified, it will bail on updating
 // the rest of the subscribers and start from the top again. This way the routine can be reused by
@@ -270,7 +270,7 @@ func (v *WatchableValue[T]) NotifyHandlerAfterSubscription(
 // reflect the current status of the goroutine, i.e. it will initialized while the goroutine is being
 // spun up, then running when the goroutine has loaded the SubscriberSets.
 func (v *WatchableValue[T]) startNotificationLoop() {
-	if v.loopStatus != notRunning {
+	if v.loopStatus != completed {
 		return
 	}
 
@@ -314,7 +314,7 @@ func (v *WatchableValue[T]) startNotificationLoop() {
 				// changed from when it was initially read at the top of the loop. Since the lock is currently held,
 				// setting loopRunning to false will signal to the next invocation of startNotificationLoop that the
 				// loop routine is not running.
-				v.loopStatus = notRunning
+				v.loopStatus = completed
 				wg = v.subscriberWg
 				v.subscriberWg = nil
 			}

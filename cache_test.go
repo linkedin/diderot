@@ -1,9 +1,13 @@
 package diderot_test
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"slices"
 	"sort"
 	"strconv"
@@ -868,7 +872,7 @@ func TestGlobRace(t *testing.T) {
 
 		readsDone.Wait()
 	})
-	// This tests subscribing to a collection that is currently being updated.
+	// This tests subscribing to a collection whose entries are being concurrently added/updated/cleared.
 	t.Run("subscribe", func(t *testing.T) {
 		c := newCache()
 

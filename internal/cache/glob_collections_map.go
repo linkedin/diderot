@@ -84,9 +84,10 @@ func (gcm *GlobCollectionsMap[T]) Subscribe(
 
 		if len(collection.nonNilValueNames) == 0 {
 			handler.Notify(collection.url, nil, ads.SubscriptionMetadata{
-				SubscribedAt: subscribedAt,
-				ModifiedAt:   time.Time{},
-				CachedAt:     time.Time{},
+				SubscribedAt:      subscribedAt,
+				ModifiedAt:        time.Time{},
+				CachedAt:          time.Time{},
+				GlobCollectionURL: collection.url,
 			})
 		} else {
 			for v := range collection.values {

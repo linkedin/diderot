@@ -17,6 +17,7 @@ import (
 	"github.com/linkedin/diderot/testutils"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -110,9 +111,10 @@ func TestADSClient(t *testing.T) {
 }
 
 func setUpTest(t *testing.T) (ts *testutils.TestServer, server *mockServer) {
-	ts = testutils.NewTestGRPCServer(t)
-
 	server = newMockServer(t)
+
+	ts = testutils.NewTestGRPCServer(t, grpc.StreamInterceptor(server.interceptor()))
+
 	discovery.RegisterAggregatedDiscoveryServiceServer(ts.Server, server)
 	ts.Start()
 	return ts, server
@@ -371,12 +373,22 @@ func newMockServer(t *testing.T) *mockServer {
 	return ms
 }
 
+func (ms *mockServer) interceptor() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		kill := <-ms.kill
+		go func() {
+			_ = handler(srv, ss)
+		}()
+		<-kill
+		return context.Canceled
+	}
+}
+
 func (ms *mockServer) StreamAggregatedResources(ads.SotWStream) error {
 	return status.Errorf(codes.Unimplemented, "not implemented")
 }
 
 func (ms *mockServer) DeltaAggregatedResources(stream ads.DeltaStream) error {
-	kill := <-ms.kill
 	ms.group.Go(func() error {
 		for {
 			select {
@@ -405,15 +417,14 @@ func (ms *mockServer) DeltaAggregatedResources(stream ads.DeltaStream) error {
 			}
 		}
 	})
-	<-kill
-	ms.t.Log("Stream killed")
-	return context.Canceled
+	return nil
 }
 
 func (ms *mockServer) accept() context.CancelFunc {
 	ch := make(chan struct{})
 	ms.kill <- ch
 	return sync.OnceFunc(func() {
+		ms.t.Log("Stream killed")
 		close(ch)
 		require.NoError(ms.t, ms.group.Wait())
 	})

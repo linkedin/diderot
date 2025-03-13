@@ -369,7 +369,7 @@ func (c *cacheWithPriority[T]) Clear(name string, clearedAt time.Time) {
 	var shouldDelete bool
 	c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
 		isFullClear := value.Clear(c.p, clearedAt)
-		if gcURL, err := ads.ExtractGlobCollectionURLFromResourceURN(name, c.trimmedTypeURL); err == nil {
+		if gcURL, err := parseGlobCollectionURN[T](name); err == nil {
 			c.globCollections.RemoveValueFromCollection(gcURL, value)
 		}
 		shouldDelete = isFullClear && value.SubscriberSets[internal.ExplicitSubscription].Size() == 0

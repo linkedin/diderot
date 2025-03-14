@@ -20,14 +20,9 @@ import (
 // StartNotificationBatch immediately preceding it. However, SubscriptionHandler.Notify can be
 // invoked at any point.
 type BatchSubscriptionHandler interface {
-	StartNotificationBatch()
+	StartNotificationBatch(initialResourceVersions map[string]string)
 	ads.RawSubscriptionHandler
 	EndNotificationBatch()
-}
-
-type entry struct {
-	Resource *ads.RawResource
-	metadata ads.SubscriptionMetadata
 }
 
 func newHandler(
@@ -36,7 +31,7 @@ func newHandler(
 	globalLimiter handlerLimiter,
 	statsHandler serverstats.Handler,
 	ignoreDeletes bool,
-	send func(entries map[string]entry) error,
+	send func(entries map[string]*ads.RawResource) error,
 ) *handler {
 	h := &handler{
 		granularLimiter:               granularLimiter,
@@ -85,7 +80,7 @@ func (ch notifyOnceChan) reset() {
 }
 
 var entryMapPool = sync.Pool{New: func() any {
-	return make(map[string]entry)
+	return make(map[string]*ads.RawResource)
 }}
 
 // handler implements the BatchSubscriptionHandler interface using a backing map to aggregate updates
@@ -97,9 +92,9 @@ type handler struct {
 	lock            sync.Mutex
 	ctx             context.Context
 	ignoreDeletes   bool
-	send            func(entries map[string]entry) error
+	send            func(entries map[string]*ads.RawResource) error
 
-	entries map[string]entry
+	entries map[string]*ads.RawResource
 
 	// The following notifyOnceChan instances are the signaling mechanism between loop and Notify. Calls
 	// to Notify will first invoke notifyOnceChan.notify on immediateNotificationReceived based on the
@@ -119,12 +114,18 @@ type handler struct {
 
 	// If batchStarted is true, Notify will not notify notificationReceived. This allows the batch to
 	// complete before the response is sent, minimizing the number of responses.
-	batchStarted bool
+	batchStarted            bool
+	initialResourceVersions map[string]*initialResourceVersion
+}
+
+type initialResourceVersion struct {
+	version  string
+	received bool
 }
 
 // swapEntries grabs the lock then swaps the entries map to a nil map. It resets notificationReceived
 // and immediateNotificationReceived, and returns original entries map that was swapped.
-func (h *handler) swapEntries() map[string]entry {
+func (h *handler) swapEntries() map[string]*ads.RawResource {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 	entries := h.entries
@@ -228,13 +229,17 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 	}
 
 	if h.entries == nil {
-		h.entries = entryMapPool.Get().(map[string]entry)
+		h.entries = entryMapPool.Get().(map[string]*ads.RawResource)
 	}
 
-	h.entries[name] = entry{
-		Resource: r,
-		metadata: metadata,
+	if irv, ok := h.initialResourceVersions[name]; ok {
+		if r != nil && r.Version == irv.version {
+			irv.received = true
+			return
+		}
 	}
+
+	h.entries[name] = r
 
 	if r != nil && metadata.GlobCollectionURL != "" {
 		// When a glob collection is empty, it is signaled to the client with a corresponding deletion of
@@ -267,11 +272,17 @@ func (h *handler) ResourceMarshalError(name string, resource proto.Message, err 
 	}
 }
 
-func (h *handler) StartNotificationBatch() {
+func (h *handler) StartNotificationBatch(initialResourceVersions map[string]string) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
 	h.batchStarted = true
+	if len(initialResourceVersions) > 0 {
+		h.initialResourceVersions = make(map[string]*initialResourceVersion, len(initialResourceVersions))
+		for k, v := range initialResourceVersions {
+			h.initialResourceVersions[k] = &initialResourceVersion{version: v}
+		}
+	}
 }
 
 func (h *handler) EndNotificationBatch() {
@@ -279,6 +290,12 @@ func (h *handler) EndNotificationBatch() {
 	defer h.lock.Unlock()
 
 	h.batchStarted = false
+
+	for name, irv := range h.initialResourceVersions {
+		if _, ok := h.entries[name]; !ok && !irv.received {
+			h.entries[name] = nil
+		}
+	}
 
 	if len(h.entries) > 0 {
 		h.immediateNotificationReceived.notify()
@@ -313,13 +330,13 @@ func newSotWHandler(
 	send func(res *ads.SotWDiscoveryResponse) error,
 ) *handler {
 	isPseudoDeltaSotW := utils.IsPseudoDeltaSotW(typeUrl)
-	var looper func(resources map[string]entry) error
+	var looper func(resources map[string]*ads.RawResource) error
 	if isPseudoDeltaSotW {
-		looper = func(entries map[string]entry) error {
+		looper = func(entries map[string]*ads.RawResource) error {
 			versions := map[string]string{}
 
 			for name, e := range entries {
-				versions[name] = e.Resource.Version
+				versions[name] = e.Version
 			}
 
 			res := &ads.SotWDiscoveryResponse{
@@ -327,20 +344,20 @@ func newSotWHandler(
 				Nonce:   utils.NewNonce(0),
 			}
 			for _, e := range entries {
-				res.Resources = append(res.Resources, e.Resource.Resource)
+				res.Resources = append(res.Resources, e.Resource)
 			}
 			res.VersionInfo = utils.MapToProto(versions)
 			return send(res)
 		}
 	} else {
-		allResources := map[string]entry{}
+		allResources := map[string]*ads.RawResource{}
 		versions := map[string]string{}
 
-		looper = func(resources map[string]entry) error {
+		looper = func(resources map[string]*ads.RawResource) error {
 			for name, r := range resources {
-				if r.Resource != nil {
+				if r != nil {
 					allResources[name] = r
-					versions[name] = r.Resource.Version
+					versions[name] = r.Version
 				} else {
 					delete(allResources, name)
 					delete(versions, name)
@@ -352,7 +369,7 @@ func newSotWHandler(
 				Nonce:   utils.NewNonce(0),
 			}
 			for _, r := range allResources {
-				res.Resources = append(res.Resources, r.Resource.Resource)
+				res.Resources = append(res.Resources, r.Resource)
 			}
 			res.VersionInfo = utils.MapToProto(versions)
 			return send(res)

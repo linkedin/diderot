@@ -122,7 +122,7 @@ func TestDeltaHandlerChunking(t *testing.T) {
 		minChunkSize: initialChunkSize(typeURL),
 	}
 
-	getSentResponses := func(resources map[string]entry, expectedChunks int) []*ads.DeltaDiscoveryResponse {
+	getSentResponses := func(resources map[string]*ads.RawResource, expectedChunks int) []*ads.DeltaDiscoveryResponse {
 		responses := ds.chunk(resources)
 		require.Len(t, responses, expectedChunks)
 		expectedRemainingChunks := 0
@@ -135,9 +135,9 @@ func TestDeltaHandlerChunking(t *testing.T) {
 		return responses
 	}
 
-	sentResponses := getSentResponses(map[string]entry{
-		foo.Name: {Resource: foo},
-		bar.Name: {Resource: bar},
+	sentResponses := getSentResponses(map[string]*ads.RawResource{
+		foo.Name: foo,
+		bar.Name: bar,
 	}, 2)
 	require.Equal(t, len(sentResponses[0].Resources), 1)
 	require.Equal(t, len(sentResponses[1].Resources), 1)
@@ -155,9 +155,9 @@ func TestDeltaHandlerChunking(t *testing.T) {
 	// Delete resources whose names are the same size as the resources to trip the chunker with the same conditions
 	name1 := strings.Repeat("1", resourceSize)
 	name2 := strings.Repeat("2", resourceSize)
-	sentResponses = getSentResponses(map[string]entry{
-		name1: {Resource: nil},
-		name2: {Resource: nil},
+	sentResponses = getSentResponses(map[string]*ads.RawResource{
+		name1: nil,
+		name2: nil,
 	}, 2)
 	require.Equal(t, len(sentResponses[0].RemovedResources), 1)
 	require.Equal(t, len(sentResponses[1].RemovedResources), 1)
@@ -169,11 +169,11 @@ func TestDeltaHandlerChunking(t *testing.T) {
 	small1, small2, small3 := "a", "b", "c"
 	wayTooBig := strings.Repeat("3", 10*resourceSize)
 
-	sentResponses = getSentResponses(map[string]entry{
-		small1:    {Resource: nil},
-		small2:    {Resource: nil},
-		small3:    {Resource: nil},
-		wayTooBig: {Resource: nil},
+	sentResponses = getSentResponses(map[string]*ads.RawResource{
+		small1:    nil,
+		small2:    nil,
+		small3:    nil,
+		wayTooBig: nil,
 	}, 1)
 	require.Equal(t, len(sentResponses[0].RemovedResources), 3)
 	require.ElementsMatch(t, []string{small1, small2, small3}, sentResponses[0].RemovedResources)

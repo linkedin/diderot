@@ -223,7 +223,6 @@ func (s *ADSServer) DeltaAggregatedResources(stream ads.DeltaStream) (err error)
 		server:     s,
 		stream:     stream,
 		streamType: ads.DeltaStreamType,
-		// TODO: respect the initial_resource_versions map instead of sending everything every time
 		newHandler: func(
 			ctx context.Context,
 			responseLimiter *rate.Limiter,

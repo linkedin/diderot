@@ -442,6 +442,104 @@ func TestEndToEnd(t *testing.T) {
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource).Resource, res.Resources[0])
 	})
 
+	t.Run("initial resource versions", func(t *testing.T) {
+		const (
+			foo = "foo"
+			bar = "bar"
+			qux = "qux"
+		)
+
+		set := func(name, version string) {
+			bytesCache.Set(name, version, wrapperspb.Bytes(nil), time.Time{})
+		}
+		set(foo, "0")
+		set(bar, "1")
+		checkResourceVersions := func(res *ads.DeltaDiscoveryResponse, versions map[string]string) {
+			actualVersions := make(map[string]string, len(res.Resources))
+			for _, r := range res.Resources {
+				actualVersions[r.Name] = r.Version
+			}
+			require.Equal(t, versions, actualVersions)
+		}
+
+		newStream := func() (ads.DeltaClient, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(testutils.Context(t))
+			stream, err := client.DeltaAggregatedResources(ctx)
+			require.NoError(t, err)
+			return stream, cancel
+		}
+
+		req := &ads.DeltaDiscoveryRequest{
+			Node:                   locator.node,
+			TypeUrl:                utils.GetTypeURL[*wrapperspb.BytesValue](),
+			ResourceNamesSubscribe: []string{ads.WildcardSubscription},
+			InitialResourceVersions: map[string]string{
+				foo: "0",
+				// bar is at version 1, not 0, so the server should only return bar since the version for foo
+				// matches.
+				bar: "0",
+			},
+		}
+		stream, cancel := newStream()
+		require.NoError(t, stream.Send(req))
+
+		res := new(ads.DeltaDiscoveryResponse)
+		waitForResponse(t, res, stream, 10*time.Millisecond)
+		checkResourceVersions(res, map[string]string{
+			bar: "1",
+		})
+
+		// Close the stream while the cache is updated to mimic a reconnect
+		cancel()
+
+		bytesCache.Clear(foo, time.Time{})
+		set(qux, "2")
+
+		// These are the versions that were received most recently and match what the client thinks are the
+		// most recent versions in the server.
+		req.InitialResourceVersions = map[string]string{
+			foo: "0",
+			bar: "1",
+		}
+
+		// Reconnect
+		stream, cancel = newStream()
+		require.NoError(t, stream.Send(req))
+
+		waitForResponse(t, res, stream, 10*time.Millisecond)
+		checkResourceVersions(res, map[string]string{
+			// only qux is expected since bar's version matches.
+			qux: "2",
+		})
+		require.ElementsMatch(t, []string{foo}, res.RemovedResources)
+
+		// These versions *exactly* match what is in the cache, so the server is expected not to respond.
+		req.InitialResourceVersions = map[string]string{
+			bar: "1",
+			qux: "2",
+		}
+
+		// Reconnect
+		stream, cancel = newStream()
+		require.NoError(t, stream.Send(req))
+
+		ch := make(chan error, 1)
+		go func() {
+			ch <- stream.RecvMsg(res)
+		}()
+
+		select {
+		case <-ch:
+			t.Fatalf("Server should not have responded")
+		case <-time.After(time.Second):
+			// It's impossible to detect when the server *doesn't* send a response, but since the timeout for
+			// receiving a response in previous parts of the test is 10ms, if the server does not send a response
+			// for a second, it's safe to say it never will.
+			cancel()
+			// Wait for the goroutine to die.
+			<-ch
+		}
+	})
 }
 
 type xDSResponse interface {
@@ -493,7 +591,7 @@ type simpleBatchHandler struct {
 	ch     atomic.Pointer[chan struct{}]
 }
 
-func (h *simpleBatchHandler) StartNotificationBatch() {
+func (h *simpleBatchHandler) StartNotificationBatch(_ map[string]string) {
 	ch := make(chan struct{}, 1)
 	require.True(h.t, h.ch.CompareAndSwap(nil, &ch))
 }
@@ -792,13 +890,13 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 // batchFuncHandler the equivalent of funcHandler but for the BatchSubscriptionHandler interface.
 type batchFuncHandler struct {
 	t      *testing.T
-	start  func()
+	start  func(initialResourceVersions map[string]string)
 	notify func(name string, r *ads.RawResource, metadata ads.SubscriptionMetadata)
 	end    func()
 }
 
-func (b *batchFuncHandler) StartNotificationBatch() {
-	b.start()
+func (b *batchFuncHandler) StartNotificationBatch(initialResourceVersions map[string]string) {
+	b.start(initialResourceVersions)
 }
 
 func (b *batchFuncHandler) Notify(name string, r *ads.RawResource, metadata ads.SubscriptionMetadata) {
@@ -815,7 +913,7 @@ func (b *batchFuncHandler) EndNotificationBatch() {
 
 func NewBatchSubscriptionHandler(
 	t *testing.T,
-	start func(),
+	start func(initialResourceVersions map[string]string),
 	notify func(name string, r *ads.RawResource, metadata ads.SubscriptionMetadata),
 	end func(),
 ) internal.BatchSubscriptionHandler {
@@ -830,7 +928,9 @@ func NewBatchSubscriptionHandler(
 func NewNoopBatchSubscriptionHandler(t *testing.T) internal.BatchSubscriptionHandler {
 	return NewBatchSubscriptionHandler(
 		t,
-		func() {}, func(string, *ads.RawResource, ads.SubscriptionMetadata) {}, func() {},
+		func(map[string]string) {},
+		func(string, *ads.RawResource, ads.SubscriptionMetadata) {},
+		func() {},
 	)
 }
 

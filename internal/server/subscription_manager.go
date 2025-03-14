@@ -113,7 +113,7 @@ func NewSotWSubscriptionManager(
 //
 // [the spec]: https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol.html#how-the-client-specifies-what-resources-to-return
 func (m *deltaSubscriptionManager) ProcessSubscriptions(req *ads.DeltaDiscoveryRequest) {
-	m.handler.StartNotificationBatch()
+	m.handler.StartNotificationBatch(req.InitialResourceVersions)
 	defer m.handler.EndNotificationBatch()
 
 	m.lock.Lock()
@@ -144,7 +144,7 @@ func (m *deltaSubscriptionManager) ProcessSubscriptions(req *ads.DeltaDiscoveryR
 //
 // [the spec]: https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol.html#how-the-client-specifies-what-resources-to-return
 func (m *sotWSubscriptionManager) ProcessSubscriptions(req *ads.SotWDiscoveryRequest) {
-	m.handler.StartNotificationBatch()
+	m.handler.StartNotificationBatch(nil)
 	defer m.handler.EndNotificationBatch()
 
 	m.lock.Lock()

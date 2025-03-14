@@ -1,13 +1,9 @@
 package diderot_test
 
 import (
-	"context"
 	"fmt"
 	"maps"
 	"math/rand/v2"
-	"net"
-	"net/http"
-	_ "net/http/pprof"
 	"slices"
 	"sort"
 	"strconv"

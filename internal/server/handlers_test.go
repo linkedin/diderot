@@ -27,7 +27,7 @@ func TestHandlerDebounce(t *testing.T) {
 	var enterSendWg, continueSendWg sync.WaitGroup
 	continueSendWg.Add(1)
 
-	actualResources := map[string]entry{}
+	actualResources := make(map[string]*ads.RawResource)
 
 	h := newHandler(
 		testutils.Context(t),
@@ -35,7 +35,7 @@ func TestHandlerDebounce(t *testing.T) {
 		l,
 		new(customStatsHandler),
 		false,
-		func(resources map[string]entry) error {
+		func(resources map[string]*ads.RawResource) error {
 			require.True(t, released.Swap(false), "send invoked without being released")
 			require.NotEmpty(t, resources)
 			enterSendWg.Done()
@@ -86,11 +86,8 @@ func TestHandlerDebounce(t *testing.T) {
 	released.Store(true)
 	l.Release()
 	require.Equal(t,
-		map[string]entry{
-			foo: {
-				Resource: nil,
-				metadata: fooDeleteMetadata,
-			},
+		map[string]*ads.RawResource{
+			foo: nil,
 		},
 		actualResources)
 	delete(actualResources, foo)
@@ -100,11 +97,8 @@ func TestHandlerDebounce(t *testing.T) {
 	l.Release()
 	require.Equal(
 		t,
-		map[string]entry{
-			bar: {
-				Resource: barR,
-				metadata: barCreateMetadata,
-			},
+		map[string]*ads.RawResource{
+			bar: barR,
 		},
 		actualResources,
 	)
@@ -112,7 +106,7 @@ func TestHandlerDebounce(t *testing.T) {
 
 func TestHandlerBatching(t *testing.T) {
 	var released atomic.Bool
-	ch := make(chan map[string]entry)
+	ch := make(chan map[string]*ads.RawResource)
 	granular := NewTestHandlerLimiter()
 	h := newHandler(
 		testutils.Context(t),
@@ -120,7 +114,7 @@ func TestHandlerBatching(t *testing.T) {
 		NoopLimiter{},
 		new(customStatsHandler),
 		false,
-		func(resources map[string]entry) error {
+		func(resources map[string]*ads.RawResource) error {
 			// Double check that send isn't invoked before it's expected
 			if !released.Load() {
 				t.Fatalf("send invoked before release!")
@@ -129,15 +123,11 @@ func TestHandlerBatching(t *testing.T) {
 			return nil
 		},
 	)
-	expectedEntries := make(map[string]entry)
+	expectedEntries := make(map[string]*ads.RawResource)
 	notify := func() {
 		name := strconv.Itoa(len(expectedEntries))
-		e := entry{
-			Resource: nil,
-			metadata: ads.SubscriptionMetadata{},
-		}
-		h.Notify(name, nil, e.metadata)
-		expectedEntries[name] = e
+		h.Notify(name, nil, ads.SubscriptionMetadata{})
+		expectedEntries[name] = nil
 	}
 
 	h.StartNotificationBatch()
@@ -172,7 +162,7 @@ func TestHandlerDoesNothingOnEmptyBatch(t *testing.T) {
 		nil,
 		new(customStatsHandler),
 		false,
-		func(_ map[string]entry) error {
+		func(_ map[string]*ads.RawResource) error {
 			require.Fail(t, "notify called")
 			return nil
 		},

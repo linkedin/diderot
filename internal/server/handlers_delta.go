@@ -57,7 +57,7 @@ func newDeltaHandler(
 		globalLimiter,
 		statsHandler,
 		false,
-		func(entries map[string]entry) error {
+		func(entries map[string]*ads.RawResource) error {
 			for i, chunk := range ds.chunk(entries) {
 				if i > 0 {
 					// Respect the global limiter in between chunks
@@ -117,7 +117,7 @@ func newQueue(size int) *[]queuedResourceUpdate {
 	return queue
 }
 
-func (ds *deltaSender) chunk(resourceUpdates map[string]entry) (chunks []*ads.DeltaDiscoveryResponse) {
+func (ds *deltaSender) chunk(resourceUpdates map[string]*ads.RawResource) (chunks []*ads.DeltaDiscoveryResponse) {
 	queuePtr := newQueue(len(resourceUpdates))
 	defer queuedUpdatesPool.Put(queuePtr)
 
@@ -125,7 +125,7 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]entry) (chunks []*ads.De
 	for name, e := range resourceUpdates {
 		queue = append(queue, queuedResourceUpdate{
 			Name: name,
-			Size: encodedUpdateSize(name, e.Resource),
+			Size: encodedUpdateSize(name, e),
 		})
 	}
 	// Sort the updates in descending order
@@ -144,7 +144,7 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]entry) (chunks []*ads.De
 
 		for ; idx < len(queue); idx++ {
 			update := queue[idx]
-			r := resourceUpdates[update.Name].Resource
+			r := resourceUpdates[update.Name]
 
 			if ds.maxChunkSize > 0 {
 				if ds.minChunkSize+update.Size > ds.maxChunkSize {

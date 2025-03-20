@@ -431,8 +431,9 @@ func TestCacheEntryDeletion(t *testing.T) {
 		checkEntryDoesNotExist(t, c)
 	})
 
-	// In this test, the value is set, it should not get automatically deleted until cleared
-	t.Run("clear deletes entry", func(t *testing.T) {
+	// In this test, the value is set, it should not get automatically deleted until cleared and the
+	// notification loop ends.
+	t.Run("clear deletes entry after loop ends", func(t *testing.T) {
 		c := setup(t)
 		// Explicitly set the entry
 		c.Set(name1, "0", Now(), noTime)
@@ -440,7 +441,40 @@ func TestCacheEntryDeletion(t *testing.T) {
 		c.Unsubscribe(name1, h)
 		checkEntryExists(t, c)
 		c.Clear(name1, noTime)
-		checkEntryDoesNotExist(t, c)
+		// Because the notification loop may still be running from the previous call to Set, the value may be
+		// still be present in the cache for a short while. However, it is expected to *eventually*
+		// disappear.
+		require.Eventually(t, func() bool { return !inCache(c) }, time.Second, time.Millisecond)
+	})
+
+	// Checks that while the notification loop is running, the cache entry will never be deleted.
+	t.Run("no deletions while loop is running", func(t *testing.T) {
+		c := newCache()
+
+		var clearReceived sync.WaitGroup
+		clearReceived.Add(1)
+		var blockLoop sync.WaitGroup
+		blockLoop.Add(1)
+
+		c.Subscribe(ads.WildcardSubscription, testutils.NewSubscriptionHandler(
+			func(name string, r *ads.Resource[*Timestamp], _ ads.SubscriptionMetadata) {
+				if r == nil {
+					clearReceived.Done()
+					blockLoop.Wait()
+				}
+			},
+		))
+
+		// Set the entry, then clear it
+		c.Set(name1, "0", Now(), noTime)
+		c.Clear(name1, noTime)
+
+		clearReceived.Wait()
+
+		// If the entry does not exist in the cache while the loop is still running, then a subsequent Set
+		// call could start a new notification loop, which could cause competing updates for the same
+		// resource.
+		checkEntryExists(t, c)
 	})
 }
 

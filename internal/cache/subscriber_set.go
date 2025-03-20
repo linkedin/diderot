@@ -104,6 +104,11 @@ func (m *SubscriberSet[T]) Size() int {
 	return int(m.size.Load())
 }
 
+// IsEmpty is a convenience function that checks whether the set is empty˜.
+func (m *SubscriberSet[T]) IsEmpty() bool {
+	return m.Size() == 0
+}
+
 type SubscriberSetIterator[T proto.Message] iter.Seq2[ads.SubscriptionHandler[T], time.Time]
 
 // Iterator returns an iterator over the SubscriberSet. The returned associated version can be used

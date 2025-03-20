@@ -299,16 +299,29 @@ func (c *cache[T]) createOrModifyEntry(name string, f func(name string, value *i
 // signaling to the notification goroutine that this entry will not be updated anymore.
 func (c *cache[T]) deleteEntryIfNilAndNoSubscribers(name string) {
 	c.resources.DeleteIf(name, func(name string, value *internal.WatchableValue[T]) bool {
-		hasNoExplicitSubscribers := value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
-		if value.Read() == nil && hasNoExplicitSubscribers {
-			if gcURL, err := parseGlobCollectionURN[T](name); err == nil {
-				c.globCollections.RemoveValueFromCollection(gcURL, value)
-			}
-			return true
+		subs := value.SubscriberSets[internal.ExplicitSubscription]
+		if !subs.IsEmpty() {
+			// It's possible that between releasing the read lock and acquiring the write lock, the entry was
+			// resubscribed to, in which case it is no longer eligible for deletion.
+			return false
 		}
-		// It's possible that between releasing the read lock and acquiring the write lock, the entry was either
-		// resubscribed to or set to a non-nil value, in which case it is no longer eligible for deletion.
-		return false
+		// At this point, because the write lock is held, no new *explicit* subscribers will be added.
+		// However, a notification loop can still be running due to glob or wildcard subscribers. In this
+		// case, the deletion should only be attempted once the notification loop stops.
+		// DeleteNowOrQueueDeletion checks whether the value is empty and the notification loop is not
+		// running and returns true if the entry can be deleted. Otherwise, it schedules re-invoking this
+		// function after the notification loop ends. Deleting the entry without checking whether the
+		// notification loop is running can result in multiple WatchableValues created for the same resource,
+		// and therefore multiple, competing notification loops which can result in non-deterministic
+		// behavior.
+		if !value.DeleteNowOrQueueDeletion(c.deleteEntryIfNilAndNoSubscribers) {
+			return false
+		}
+
+		if gcURL, err := parseGlobCollectionURN[T](name); err == nil {
+			c.globCollections.RemoveValueFromCollection(gcURL, value)
+		}
+		return true
 	})
 }
 
@@ -376,11 +389,7 @@ type cacheWithPriority[T proto.Message] struct {
 func (c *cacheWithPriority[T]) Clear(name string, clearedAt time.Time) {
 	var shouldDelete bool
 	c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
-		isFullClear := value.Clear(c.p, clearedAt)
-		if gcURL, err := parseGlobCollectionURN[T](name); err == nil {
-			c.globCollections.RemoveValueFromCollection(gcURL, value)
-		}
-		shouldDelete = isFullClear && value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
+		shouldDelete = value.Clear(c.p, clearedAt) && value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
 	})
 	if shouldDelete {
 		c.deleteEntryIfNilAndNoSubscribers(name)

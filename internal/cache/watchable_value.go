@@ -58,6 +58,10 @@ type WatchableValue[T proto.Message] struct {
 	// the current value instead of NotifyHandlerAfterSubscription doing it directly. This is done to
 	// avoid double notifications.
 	subscriberWg *sync.WaitGroup
+	// This field is set by DeleteNowOrQueueDeletion. The function, if not nil, should be called when the
+	// notification exits. This will trigger a deletion of the entry in the parent cache. If not called,
+	// the entry will be left dangling instead of being deleted from the cache.
+	queuedDeletion func(name string)
 	// SubscriberSets is holds all the async.SubscriberSet instances relevant to this WatchableValue.
 	SubscriberSets [subscriptionTypes]*SubscriberSet[T]
 	// lastSeenSubscriberSetVersions stores the SubscriberSetVersion of the most-recently iterated
@@ -97,6 +101,19 @@ func (v *WatchableValue[T]) Unsubscribe(handler ads.SubscriptionHandler[T]) (emp
 
 func (v *WatchableValue[T]) Read() *ads.Resource[T] {
 	return v.currentValue.Load()
+}
+
+func (v *WatchableValue[T]) DeleteNowOrQueueDeletion(tryDelete func(name string)) bool {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
+	if v.loopStatus == completed && v.valuesFromDifferentPrioritySources[v.currentIndex] == nil {
+		return true
+	}
+
+	v.queuedDeletion = tryDelete
+
+	return false
 }
 
 func (v *WatchableValue[T]) readWithMetadataNoLock() valueWithMetadata[T] {
@@ -159,6 +176,9 @@ func (v *WatchableValue[T]) Clear(p Priority, clearedAt time.Time) (isFullClear 
 func (v *WatchableValue[T]) Set(p Priority, r *ads.Resource[T], modifiedAt time.Time) {
 	v.lock.Lock()
 	defer v.lock.Unlock()
+
+	// Always clear out a pending deletion attempt if the value is being set.
+	v.queuedDeletion = nil
 
 	v.valuesFromDifferentPrioritySources[p] = r
 	// Ignore updates of a lower priority than the current value
@@ -309,6 +329,7 @@ func (v *WatchableValue[T]) startNotificationLoop() {
 			v.lock.Lock()
 			done := v.valuesFromDifferentPrioritySources[v.currentIndex] == value.resource
 			var wg *sync.WaitGroup
+			var queuedDeletion func(name string)
 			if done {
 				// At this point, the most recent value was successfully pushed to all subscribers since it has not
 				// changed from when it was initially read at the top of the loop. Since the lock is currently held,
@@ -317,6 +338,8 @@ func (v *WatchableValue[T]) startNotificationLoop() {
 				v.loopStatus = completed
 				wg = v.subscriberWg
 				v.subscriberWg = nil
+				queuedDeletion = v.queuedDeletion
+				v.queuedDeletion = nil
 			}
 			// Otherwise, if done isn't true then the value changed in between notifying the subscribers and
 			// grabbing the lock. In this case the loop will restart, reusing the goroutine.
@@ -325,6 +348,9 @@ func (v *WatchableValue[T]) startNotificationLoop() {
 			if done {
 				if wg != nil {
 					wg.Done()
+				}
+				if queuedDeletion != nil {
+					queuedDeletion(v.name)
 				}
 				return
 			}

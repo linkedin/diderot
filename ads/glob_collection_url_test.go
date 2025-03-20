@@ -139,34 +139,56 @@ func testGoodURIs(t *testing.T, id string, parser func(string) (GlobCollectionUR
 }
 
 func TestParseGlobCollectionURL(t *testing.T) {
+	genericParser := ParseGlobCollectionURL[*wrapperspb.Int64Value]
+	typeURL := getTrimmedTypeURL[*wrapperspb.Int64Value]()
+	rawParser := func(s string) (GlobCollectionURL, error) {
+		return RawParseGlobCollectionURL(typeURL, s)
+	}
+
 	t.Run("bad URIs", func(t *testing.T) {
-		testBadURIs(t, ParseGlobCollectionURL[*wrapperspb.Int64Value])
+		testBadURIs(t, genericParser)
+		testBadURIs(t, rawParser)
 	})
 	t.Run("good URIs", func(t *testing.T) {
-		testGoodURIs(t, WildcardSubscription, ParseGlobCollectionURL[*wrapperspb.Int64Value])
+		testGoodURIs(t, WildcardSubscription, genericParser)
+		testGoodURIs(t, WildcardSubscription, rawParser)
 	})
 	t.Run("rejects URNs", func(t *testing.T) {
 		_, err := ParseGlobCollectionURL[*wrapperspb.Int64Value]("xdstp:///" + resourceType + "/foo/bar")
+		require.Error(t, err)
+		_, err = RawParseGlobCollectionURL(typeURL, "xdstp:///"+resourceType+"/foo/bar")
 		require.Error(t, err)
 	})
 }
 
 func TestParseGlobCollectionURN(t *testing.T) {
-	parser := func(s string) (GlobCollectionURL, error) {
+	genericParser := func(s string) (GlobCollectionURL, error) {
 		gcURL, _, err := ParseGlobCollectionURN[*wrapperspb.Int64Value](s)
+		return gcURL, err
+	}
+	typeURL := getTrimmedTypeURL[*wrapperspb.Int64Value]()
+	rawParser := func(s string) (GlobCollectionURL, error) {
+		gcURL, _, err := RawParseGlobCollectionURN(typeURL, s)
 		return gcURL, err
 	}
 
 	t.Run("bad URIs", func(t *testing.T) {
-		testBadURIs(t, parser)
+		testBadURIs(t, genericParser)
+		testBadURIs(t, rawParser)
 	})
 	t.Run("good URIs", func(t *testing.T) {
-		testGoodURIs(t, "foo", parser)
+		testGoodURIs(t, "foo", genericParser)
+		testGoodURIs(t, "foo", rawParser)
 	})
 	t.Run("handles glob collection URLs", func(t *testing.T) {
 		gcURL, r, err := ParseGlobCollectionURN[*wrapperspb.Int64Value]("xdstp:///" + resourceType + "/foo/*")
 		require.NoError(t, err)
 		require.Equal(t, NewGlobCollectionURL[*wrapperspb.Int64Value]("", "foo", nil), gcURL)
+		require.Equal(t, WildcardSubscription, r)
+
+		gcURL, r, err = RawParseGlobCollectionURN(typeURL, "xdstp:///"+resourceType+"/foo/*")
+		require.NoError(t, err)
+		require.Equal(t, RawNewGlobCollectionURL("", typeURL, "foo", nil), gcURL)
 		require.Equal(t, WildcardSubscription, r)
 	})
 }
@@ -196,6 +218,44 @@ func benchmarkGetTrimmedTypeURL[T proto.Message](b *testing.B) {
 	})
 }
 
+// This benchmark validates that using reflection on the protobuf type does not incur any unexpected
+// costs. The most expensive operation is currently [url.Parse], which can't easily be removed. It is
+// critical that this operation remain as inexpensive as possible because it is called repeatedly in
+// the cache (for each insertion or deletion). Current results:
+//
+//	goos: darwin
+//	goarch: amd64
+//	pkg: github.com/linkedin/diderot/ads
+//	cpu: VirtualApple @ 2.50GHz
+//	                                                                                           │   results   │
+//	                                                                                           │   sec/op    │
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/generic-8                624.2n ± 3%
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/raw-8                    610.4n ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/raw_with_prefix-8        609.6n ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/generic-8           697.1n ± 5%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/raw-8               692.4n ± 1%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/raw_with_prefix-8   691.5n ± 0%
+//	geomean                                                                                      653.0n
+//
+//	                                                                                           │  results   │
+//	                                                                                           │    B/op    │
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/generic-8                192.0 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/raw-8                    192.0 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/raw_with_prefix-8        192.0 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/generic-8           240.0 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/raw-8               240.0 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/raw_with_prefix-8   240.0 ± 0%
+//	geomean                                                                                      214.7
+//
+//	                                                                                           │  results   │
+//	                                                                                           │ allocs/op  │
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/generic-8                2.000 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/raw-8                    2.000 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/google.protobuf.Int64Value/bar/*/raw_with_prefix-8        2.000 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/generic-8           3.000 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/raw-8               3.000 ± 0%
+//	ParseGlobCollectionURN/xdstp://foo/envoy.config.cluster.v3.Cluster/bar/*/raw_with_prefix-8   3.000 ± 0%
+//	geomean                                                                                      2.449
 func BenchmarkParseGlobCollectionURN(b *testing.B) {
 	benchmarkParseGlobCollectionURN[*wrapperspb.Int64Value](b)
 	benchmarkParseGlobCollectionURN[*cluster.Cluster](b)
@@ -205,15 +265,37 @@ func benchmarkParseGlobCollectionURN[T proto.Message](b *testing.B) {
 	expectedURL := NewGlobCollectionURL[T]("foo", "bar", nil)
 	url := expectedURL.String()
 
-	var err error
-	b.Run(url, func(b *testing.B) {
+	run := func(b *testing.B, f func() (GlobCollectionURL, string, error)) {
 		var actualURL GlobCollectionURL
+		var err error
 		for range b.N {
-			actualURL, _, err = ParseGlobCollectionURN[T](url)
+			actualURL, _, err = f()
 			if err != nil {
 				b.Fatal(err)
 			}
 		}
 		require.Equal(b, expectedURL, actualURL)
+	}
+
+	b.Run(url, func(b *testing.B) {
+		b.Run("generic", func(b *testing.B) {
+			run(b, func() (GlobCollectionURL, string, error) {
+				return ParseGlobCollectionURN[T](url)
+			})
+		})
+
+		typeURL := getTrimmedTypeURL[T]()
+		b.Run("raw", func(b *testing.B) {
+			run(b, func() (GlobCollectionURL, string, error) {
+				return RawParseGlobCollectionURN(typeURL, url)
+			})
+		})
+
+		prefixedTypeURL := getTrimmedTypeURL[T]()
+		b.Run("raw with prefix", func(b *testing.B) {
+			run(b, func() (GlobCollectionURL, string, error) {
+				return RawParseGlobCollectionURN(prefixedTypeURL, url)
+			})
+		})
 	})
 }

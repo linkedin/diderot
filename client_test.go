@@ -16,7 +16,6 @@ import (
 	"github.com/linkedin/diderot/internal/utils"
 	"github.com/linkedin/diderot/testutils"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -359,7 +358,6 @@ func OnceWatcher[T proto.Message](m *map[string]*ads.Resource[T]) Watcher[T] {
 type mockConn struct {
 	t       *testing.T
 	streams chan *mockStream
-	group   errgroup.Group
 }
 
 func (mc *mockConn) Invoke(context.Context, string, any, any, ...grpc.CallOption) error {

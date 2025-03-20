@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 
+	types "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -52,10 +53,22 @@ func (u GlobCollectionURL) uri(name string) string {
 		u.ContextParameters
 }
 
+// NewGlobCollectionURL creates a new [GlobCollectionURL] for the given type, authority, path and
+// context parameters.
 func NewGlobCollectionURL[T proto.Message](authority, path string, contextParameters url.Values) GlobCollectionURL {
 	return GlobCollectionURL{
 		Authority:         authority,
 		ResourceType:      getTrimmedTypeURL[T](),
+		Path:              path,
+		ContextParameters: contextParameters.Encode(),
+	}
+}
+
+// RawNewGlobCollectionURL is the untyped equivalent of [NewGlobCollectionURL].
+func RawNewGlobCollectionURL(authority, typeURL, path string, contextParameters url.Values) GlobCollectionURL {
+	return GlobCollectionURL{
+		Authority:         authority,
+		ResourceType:      strings.TrimPrefix(typeURL, types.APITypePrefix),
 		Path:              path,
 		ContextParameters: contextParameters.Encode(),
 	}
@@ -76,6 +89,21 @@ var ErrInvalidGlobCollectionURI = errors.New("diderot: invalid glob collection U
 // [TP1 proposal]: https://github.com/cncf/xds/blob/main/proposals/TP1-xds-transport-next.md#uri-based-xds-resource-names
 func ParseGlobCollectionURL[T proto.Message](name string) (GlobCollectionURL, error) {
 	gcURL, resource, err := ParseGlobCollectionURN[T](name)
+	if err != nil {
+		return GlobCollectionURL{}, err
+	}
+
+	if resource != WildcardSubscription {
+		// URLs must end with /*
+		return GlobCollectionURL{}, ErrInvalidGlobCollectionURI
+	}
+
+	return gcURL, nil
+}
+
+// RawParseGlobCollectionURL is the untyped equivalent of [ParseGlobCollectionURL].
+func RawParseGlobCollectionURL(typeURL, name string) (GlobCollectionURL, error) {
+	gcURL, resource, err := RawParseGlobCollectionURN(typeURL, name)
 	if err != nil {
 		return GlobCollectionURL{}, err
 	}
@@ -115,52 +143,36 @@ func ParseGlobCollectionURL[T proto.Message](name string) (GlobCollectionURL, er
 // [TP1 proposal]: https://github.com/cncf/xds/blob/main/proposals/TP1-xds-transport-next.md#uri-based-xds-resource-names
 // [here]: https://github.com/cncf/xds/issues/91
 func ParseGlobCollectionURN[T proto.Message](name string) (GlobCollectionURL, string, error) {
-	gcURL, err := parseXDSTPURI[T](name)
-	if err != nil {
-		return GlobCollectionURL{}, "", err
-	}
-
-	lastSlash := strings.LastIndex(gcURL.Path, "/")
-	if lastSlash == -1 {
-		// Missing path in URL
-		return GlobCollectionURL{}, "", ErrInvalidGlobCollectionURI
-	}
-
-	resource := gcURL.Path[lastSlash+1:]
-
-	if lastSlash == 0 {
-		gcURL.Path = "/"
-	} else {
-		gcURL.Path = gcURL.Path[:lastSlash]
-	}
-
-	return gcURL, resource, nil
+	return parseXDSTPURI(getTrimmedTypeURL[T](), name)
 }
 
-func parseXDSTPURI[T proto.Message](resourceName string) (GlobCollectionURL, error) {
+// RawParseGlobCollectionURN is the untyped equivalent of [ParseGlobCollectionURN].
+func RawParseGlobCollectionURN(typeURL, name string) (GlobCollectionURL, string, error) {
+	return parseXDSTPURI(strings.TrimPrefix(typeURL, types.APITypePrefix), name)
+}
+
+func parseXDSTPURI(typeURL, resourceName string) (GlobCollectionURL, string, error) {
 	// Skip deserializing the resource name if it doesn't start with the correct scheme
 	if !strings.HasPrefix(resourceName, XDSTPScheme) {
 		// doesn't start with xdstp://
-		return GlobCollectionURL{}, ErrInvalidGlobCollectionURI
+		return GlobCollectionURL{}, "", ErrInvalidGlobCollectionURI
 	}
 
 	parsedURL, err := url.Parse(resourceName)
 	if err != nil {
 		// invalid URL
-		return GlobCollectionURL{}, ErrInvalidGlobCollectionURI
+		return GlobCollectionURL{}, "", ErrInvalidGlobCollectionURI
 	}
 
-	resourceType := getTrimmedTypeURL[T]()
-
-	collectionPath, ok := strings.CutPrefix(parsedURL.EscapedPath(), "/"+resourceType+"/")
+	collectionPath, ok := strings.CutPrefix(parsedURL.EscapedPath(), "/"+typeURL+"/")
 	if !ok {
 		// should include expected type after authority
-		return GlobCollectionURL{}, ErrInvalidGlobCollectionURI
+		return GlobCollectionURL{}, "", ErrInvalidGlobCollectionURI
 	}
 
 	u := GlobCollectionURL{
 		Authority:    parsedURL.Host,
-		ResourceType: resourceType,
+		ResourceType: typeURL,
 		Path:         collectionPath,
 	}
 	if len(parsedURL.RawQuery) > 0 {
@@ -169,7 +181,21 @@ func parseXDSTPURI[T proto.Message](resourceName string) (GlobCollectionURL, err
 		u.ContextParameters = "?" + parsedURL.Query().Encode()
 	}
 
-	return u, nil
+	lastSlash := strings.LastIndex(u.Path, "/")
+	if lastSlash == -1 {
+		// Missing path in URL
+		return GlobCollectionURL{}, "", ErrInvalidGlobCollectionURI
+	}
+
+	resource := u.Path[lastSlash+1:]
+
+	if lastSlash == 0 {
+		u.Path = "/"
+	} else {
+		u.Path = u.Path[:lastSlash]
+	}
+
+	return u, resource, nil
 }
 
 func getTrimmedTypeURL[T proto.Message]() string {

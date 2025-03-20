@@ -29,7 +29,7 @@ const (
 
 // NewADSClient creates a new [*ADSClient] with the given options. To stop the client, close the
 // backing [grpc.ClientConn].
-func NewADSClient(conn *grpc.ClientConn, node *ads.Node, opts ...ADSClientOption) *ADSClient {
+func NewADSClient(conn grpc.ClientConnInterface, node *ads.Node, opts ...ADSClientOption) *ADSClient {
 	c := &ADSClient{
 		conn:            conn,
 		node:            node,
@@ -81,7 +81,7 @@ func WithResponseChunkingSupported(supported bool) ADSClientOption {
 type ADSClient struct {
 	options
 	node *ads.Node
-	conn *grpc.ClientConn
+	conn grpc.ClientConnInterface
 
 	newSubscription chan struct{}
 

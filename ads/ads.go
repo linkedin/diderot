@@ -269,9 +269,9 @@ var StreamTypes = [...]StreamType{UnknownStreamType, DeltaStreamType, SotWStream
 // if it is neither.
 func LookupStreamTypeByRPCMethod(rpcMethod string) (StreamType, bool) {
 	switch rpcMethod {
-	case "/envoy.service.discovery.v3.AggregatedDiscoveryService/StreamAggregatedResources":
+	case discovery.AggregatedDiscoveryService_StreamAggregatedResources_FullMethodName:
 		return SotWStreamType, true
-	case "/envoy.service.discovery.v3.AggregatedDiscoveryService/DeltaAggregatedResources":
+	case discovery.AggregatedDiscoveryService_DeltaAggregatedResources_FullMethodName:
 		return DeltaStreamType, true
 	default:
 		return UnknownStreamType, false

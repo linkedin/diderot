@@ -86,7 +86,9 @@ func TestHandlerDebounce(t *testing.T) {
 	released.Store(true)
 	l.Release()
 	require.Equal(t,
-		map[string]*ads.RawResource{foo: nil},
+		map[string]*ads.RawResource{
+			foo: nil,
+		},
 		actualResources)
 	delete(actualResources, foo)
 

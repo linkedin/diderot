@@ -201,6 +201,9 @@ func TestEndToEnd(t *testing.T) {
 		grpc.WithResolvers(xdsResolverBuilder),
 	)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, conn.Close())
+	})
 
 	client := discovery.NewAggregatedDiscoveryServiceClient(conn)
 	t.Run("xDS sanity check", func(t *testing.T) {

@@ -152,13 +152,16 @@ func (h *handler) loop() {
 		}
 
 		entries := h.swapEntries()
-		if err := h.send(entries); err != nil {
-			return
-		}
+
+		err := h.send(entries)
 
 		// Return the used map to the pool after clearing it.
 		clear(entries)
 		entryMapPool.Put(entries)
+
+		if err != nil {
+			return
+		}
 	}
 }
 

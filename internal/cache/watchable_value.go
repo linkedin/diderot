@@ -296,76 +296,74 @@ func (v *WatchableValue[T]) startNotificationLoop() {
 
 	v.loopStatus = initialized
 
-	go func() {
-		for {
-			v.lock.Lock()
-			value := v.readWithMetadataNoLock()
-
-			var subscriberIterators [subscriptionTypes]SubscriberSetIterator[T]
-			for i := range subscriptionTypes {
-				subscriberIterators[i], v.lastSeenSubscriberSetVersions[i] = v.SubscriberSets[i].Iterator()
-			}
-
-			v.loopStatus = running
-			v.lock.Unlock()
-
-			if v.globCollection != nil && value.resource != nil {
-				// To ensure proper ordering of notifications for subscribers, it's important to notify the
-				// collection of created resources _before_ looping through the subscribers, and to notify it of
-				// deleted resources _after_.
-				v.globCollection.resourceSet(v.name)
-			}
-
-			if !v.notifySubscribers(value, subscriberIterators) {
-				// If notifySubscribers returns false, the value changed during the loop. Immediately reload the
-				// value and try again, reusing the goroutine.
-				continue
-			}
-
-			if v.globCollection != nil && value.resource == nil {
-				v.globCollection.resourceCleared(v.name)
-			}
-
-			v.lock.Lock()
-			done := v.valuesFromDifferentPrioritySources[v.currentIndex] == value.resource
-			var wg *sync.WaitGroup
-			var queuedDeletion func(name string)
-			if done {
-				// At this point, the most recent value was successfully pushed to all subscribers since it has not
-				// changed from when it was initially read at the top of the loop. Since the lock is currently held,
-				// setting loopRunning to false will signal to the next invocation of startNotificationLoop that the
-				// loop routine is not running.
-				v.loopStatus = completed
-				wg = v.subscriberWg
-				v.subscriberWg = nil
-				queuedDeletion = v.queuedDeletion
-				v.queuedDeletion = nil
-			}
-			// Otherwise, if done isn't true then the value changed in between notifying the subscribers and
-			// grabbing the lock. In this case the loop will restart, reusing the goroutine.
-			v.lock.Unlock()
-
-			if done {
-				if wg != nil {
-					wg.Done()
-				}
-				if queuedDeletion != nil {
-					queuedDeletion(v.name)
-				}
-				return
-			}
-		}
-	}()
+	go v.notificationLoop()
 }
 
-// notifySubscribers is invoked by WatchableValue.startNotificationLoop with the desired update. It
+func (v *WatchableValue[T]) notificationLoop() {
+	for {
+		v.lock.Lock()
+		value := v.readWithMetadataNoLock()
+
+		for i := range subscriptionTypes {
+			v.lastSeenSubscriberSetVersions[i] = v.SubscriberSets[i].Version()
+		}
+
+		v.loopStatus = running
+		v.lock.Unlock()
+
+		if v.globCollection != nil && value.resource != nil {
+			// To ensure proper ordering of notifications for subscribers, it's important to notify the
+			// collection of created resources _before_ looping through the subscribers, and to notify it of
+			// deleted resources _after_.
+			v.globCollection.resourceSet(v.name)
+		}
+
+		if !v.notifySubscribers(value) {
+			// If notifySubscribers returns false, the value changed during the loop. Immediately reload the
+			// value and try again, reusing the goroutine.
+			continue
+		}
+
+		if v.globCollection != nil && value.resource == nil {
+			v.globCollection.resourceCleared(v.name)
+		}
+
+		v.lock.Lock()
+		done := v.valuesFromDifferentPrioritySources[v.currentIndex] == value.resource
+		var wg *sync.WaitGroup
+		var queuedDeletion func(name string)
+		if done {
+			// At this point, the most recent value was successfully pushed to all subscribers since it has not
+			// changed from when it was initially read at the top of the loop. Since the lock is currently held,
+			// setting loopRunning to false will signal to the next invocation of startNotificationLoop that the
+			// loop routine is not running.
+			v.loopStatus = completed
+			wg = v.subscriberWg
+			v.subscriberWg = nil
+			queuedDeletion = v.queuedDeletion
+			v.queuedDeletion = nil
+		}
+		// Otherwise, if done isn't true then the value changed in between notifying the subscribers and
+		// grabbing the lock. In this case the loop will restart, reusing the goroutine.
+		v.lock.Unlock()
+
+		if done {
+			if wg != nil {
+				wg.Done()
+			}
+			if queuedDeletion != nil {
+				queuedDeletion(v.name)
+			}
+			return
+		}
+	}
+}
+
+// notifySubscribers is invoked by WatchableValue.notificationLoop with the desired update. It
 // returns true if all the subscribers were notified, or false if the loop exited early because the
 // value changed during the iteration.
-func (v *WatchableValue[T]) notifySubscribers(
-	value valueWithMetadata[T],
-	iterators [subscriptionTypes]SubscriberSetIterator[T],
-) bool {
-	for handler, subscribedAt := range v.iterateSubscribers(iterators) {
+func (v *WatchableValue[T]) notifySubscribers(value valueWithMetadata[T]) bool {
+	for handler, subscribedAt := range v.iterateSubscribers() {
 		// If the value has changed while looping over the subscribers, stop the loop and try again with the
 		// latest value. This avoids doing duplicate/wasted work since subscribers only care about the latest
 		// version of the value and don't mind missing intermediate values.
@@ -438,13 +436,11 @@ func (v *WatchableValue[T]) notifySubscribers(
 // unknown/non-standard subscription flows.
 //
 // [known flow]: https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol#how-the-client-specifies-what-resources-to-return
-func (v *WatchableValue[T]) iterateSubscribers(
-	iterators [subscriptionTypes]SubscriberSetIterator[T],
-) SubscriberSetIterator[T] {
+func (v *WatchableValue[T]) iterateSubscribers() SubscriberSetIterator[T] {
 	return func(yield func(ads.SubscriptionHandler[T], time.Time) bool) {
 	subscriberLoop:
-		for i, subscribers := range iterators {
-			for handler, subscribedAt := range subscribers {
+		for i, subscribers := range v.SubscriberSets {
+			for handler, subscribedAt := range subscribers.SnapshotIterator(v.lastSeenSubscriberSetVersions[i]) {
 				// If this handler was already yielded once from a previous iterator, skip it.
 				for j := i - 1; j >= 0; j-- {
 					if v.SubscriberSets[j].IsSubscribed(handler) {

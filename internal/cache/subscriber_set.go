@@ -51,7 +51,7 @@ type SubscriberSet[T proto.Message] struct {
 
 type subscriber struct {
 	subscribedAt time.Time
-	id           SubscriberSetVersion
+	version      SubscriberSetVersion
 }
 
 // IsSubscribed checks whether the given handler is subscribed to this set.
@@ -67,21 +67,21 @@ func (m *SubscriberSet[T]) IsSubscribed(handler ads.SubscriptionHandler[T]) bool
 // Subscribe registers the given SubscriptionHandler as a subscriber and returns the time and version
 // at which the subscription was processed. The returned version can be compared against the version
 // returned by Iterator to check whether the given handler is present in the iterator.
-func (m *SubscriberSet[T]) Subscribe(handler ads.SubscriptionHandler[T]) (subscribedAt time.Time, id SubscriberSetVersion) {
+func (m *SubscriberSet[T]) Subscribe(handler ads.SubscriptionHandler[T]) (time.Time, SubscriberSetVersion) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
 	m.version++
 	s := &subscriber{
 		subscribedAt: timeProvider(),
-		id:           m.version,
+		version:      m.version,
 	}
 	_, loaded := m.subscribers.Swap(handler, s)
 	if !loaded {
 		m.size.Add(1)
 	}
 
-	return s.subscribedAt, s.id
+	return s.subscribedAt, s.version
 }
 
 // Unsubscribe removes the given handler from the set, and returns whether the set is now empty as a
@@ -109,27 +109,53 @@ func (m *SubscriberSet[T]) IsEmpty() bool {
 	return m.Size() == 0
 }
 
-type SubscriberSetIterator[T proto.Message] iter.Seq2[ads.SubscriptionHandler[T], time.Time]
-
-// Iterator returns an iterator over the SubscriberSet. The returned associated version can be used
-// by subscribers to check whether they are present in the iterator. For convenience, returns an
-// empty iterator and invalid version if the receiver is nil.
-func (m *SubscriberSet[T]) Iterator() (SubscriberSetIterator[T], SubscriberSetVersion) {
+// Version returns the current version of this set. Invoking [SubscriberSet.SnapshotIterator] with
+// the returned version will only yield subscribers added to this set at or before that version.
+func (m *SubscriberSet[T]) Version() SubscriberSetVersion {
 	if m == nil {
-		return func(yield func(ads.SubscriptionHandler[T], time.Time) bool) {}, 0
+		return 0
 	}
 
 	m.lock.Lock()
-	version := m.version
-	m.lock.Unlock()
+	defer m.lock.Unlock()
+	return m.version
+}
 
+type SubscriberSetIterator[T proto.Message] iter.Seq2[ads.SubscriptionHandler[T], time.Time]
+
+// Iterator returns a [SubscriberSetIterator] that will iterate over all the subscribers currently in
+// the set.
+func (m *SubscriberSet[T]) Iterator() SubscriberSetIterator[T] {
 	return func(yield func(ads.SubscriptionHandler[T], time.Time) bool) {
-		m.subscribers.Range(func(key, value any) bool {
-			s := value.(*subscriber)
-			if s.id > version {
-				return true
+		if m == nil {
+			return
+		}
+
+		for key, value := range m.subscribers.Range {
+			if !yield(key.(ads.SubscriptionHandler[T]), value.(*subscriber).subscribedAt) {
+				break
 			}
-			return yield(key.(ads.SubscriptionHandler[T]), s.subscribedAt)
-		})
-	}, version
+		}
+	}
+}
+
+// SnapshotIterator returns a [SubscriberSetIterator] that will only iterate over the subscribers
+// that were added before or at the given version.
+func (m *SubscriberSet[T]) SnapshotIterator(v SubscriberSetVersion) SubscriberSetIterator[T] {
+	return func(yield func(ads.SubscriptionHandler[T], time.Time) bool) {
+		if m == nil {
+			return
+		}
+
+		for key, value := range m.subscribers.Range {
+			s := value.(*subscriber)
+			if s.version > v {
+				continue
+			}
+
+			if !yield(key.(ads.SubscriptionHandler[T]), s.subscribedAt) {
+				break
+			}
+		}
+	}
 }

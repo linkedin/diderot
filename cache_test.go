@@ -5,7 +5,6 @@ import (
 	"maps"
 	"math/rand/v2"
 	"slices"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -54,16 +53,10 @@ func TestCacheCrud(t *testing.T) {
 	require.Nil(t, c.Get(name1))
 
 	c.SetResource(r1, noTime)
+	require.NotNil(t, c.Get(name1))
 
 	checkEntries := func(expected ...string) {
-		var entries []string
-		c.EntryNames(func(name string) bool {
-			entries = append(entries, name)
-			return true
-		})
-		sort.Strings(entries)
-		sort.Strings(expected)
-		require.Equal(t, expected, entries)
+		require.ElementsMatch(t, expected, slices.Collect(c.EntryNames()))
 	}
 
 	checkEntries(name1)
@@ -131,10 +124,10 @@ func TestCacheSubscribe(t *testing.T) {
 	c.Unsubscribe(name1, updates)
 	c.Unsubscribe(name2, updates)
 
-	c.EntryNames(func(name string) bool {
-		t.Fatal("Cache should be empty!")
-		return true
-	})
+	for name := range c.EntryNames() {
+		t.Errorf("Cache should be empty! (got %q)", name)
+		t.Fatalf("Value for %q: %+v", name, c.Get(name))
+	}
 
 	r1 = c.Set(name1, "3", Now(), noTime)
 	wildcard.WaitForUpdate(t, r1)
@@ -387,13 +380,12 @@ func TestCacheEntryDeletion(t *testing.T) {
 
 	inCache := func(c diderot.Cache[*Timestamp]) bool {
 		inCache := false
-		c.EntryNames(func(name string) bool {
+		for name := range c.EntryNames() {
 			if name == name1 {
 				inCache = true
-				return false
+				break
 			}
-			return true
-		})
+		}
 		return inCache
 	}
 	checkEntryExists := func(t *testing.T, c diderot.Cache[*Timestamp]) {
@@ -842,6 +834,10 @@ func DisableTime(tb testing.TB) {
 // with almost all the cache), to attempt to trigger a race condition. The tests must be run with
 // -race for this to have any use.
 func TestGlobRace(t *testing.T) {
+	if testing.Short() {
+		t.Skipf("Skipping long expensive test in short mode")
+	}
+
 	prefix := globCollectionPrefix + "foo/"
 
 	// This tests many writers all competing for writes against overlapping entries.

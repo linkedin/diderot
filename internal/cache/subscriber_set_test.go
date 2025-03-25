@@ -20,12 +20,12 @@ type iterateArgs struct {
 
 func checkIterate(t *testing.T, m *SubscriberSet[*Timestamp], expectedV SubscriberSetVersion, expectedArgs ...iterateArgs) {
 	require.Equal(t, m.Size(), len(expectedArgs))
-	seq, v := m.Iterator()
+	v := m.Version()
 	require.Equal(t, expectedV, v)
 
 	var actualArgs []iterateArgs
 
-	for handler, subscribedAt := range seq {
+	for handler, subscribedAt := range m.SnapshotIterator(v) {
 		actualArgs = append(actualArgs, iterateArgs{
 			handler:      handler,
 			subscribedAt: subscribedAt,

@@ -71,8 +71,7 @@ func (g *globCollection[T]) resourceCleared(name string) {
 
 	deletedAt := time.Now()
 
-	subscribers, _ := g.subscribers.Iterator()
-	for handler, subscribedAt := range subscribers {
+	for handler, subscribedAt := range g.subscribers.Iterator() {
 		handler.Notify(g.url, nil, ads.SubscriptionMetadata{
 			SubscribedAt:      subscribedAt,
 			ModifiedAt:        deletedAt,

@@ -52,7 +52,7 @@ $(COVERAGE):
 	go tool cover -html=$(COVERAGE)
 
 profile_cache:
-	$(MAKE) -B $(PROFILES)/BenchmarkCacheThroughput.bench BENCH_PKG=./cache
+	$(MAKE) -B $(PROFILES)/BenchmarkCacheThroughput.bench BENCH_PKG=.
 
 profile_handlers:
 	$(MAKE) -B $(PROFILES)/BenchmarkHandlers.bench BENCH_PKG=./internal/server
@@ -62,6 +62,12 @@ profile_typeurl:
 
 profile_parse_glob_urn:
 	$(MAKE) -B $(PROFILES)/BenchmarkParseGlobCollectionURN.bench BENCH_PKG=ads
+
+profile_set_clear:
+	$(MAKE) -B $(PROFILES)/BenchmarkValueSetClear.bench BENCH_PKG=./internal/cache
+
+profile_notification_loop:
+	$(MAKE) -B $(PROFILES)/BenchmarkNotificationLoop.bench BENCH_PKG=./internal/cache
 
 BENCHCOUNT = 1
 BENCHTIME = 1s

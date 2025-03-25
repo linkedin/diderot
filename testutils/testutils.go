@@ -117,7 +117,7 @@ func (c ChanSubscriptionHandler[T]) WaitForNotifications(t testingT, notificatio
 		var n Notification[T]
 		select {
 		case n = <-c:
-		case <-time.After(5 * time.Hour):
+		case <-time.After(5 * time.Second):
 			t.Fatalf("Did not receive expected notification for one of: %v",
 				slices.Collect(maps.Keys(expectedNotifications)))
 		}

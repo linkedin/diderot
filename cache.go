@@ -2,6 +2,7 @@ package diderot
 
 import (
 	"fmt"
+	"iter"
 	"sync"
 	"time"
 
@@ -112,9 +113,8 @@ type Cache[T proto.Message] interface {
 type RawCache interface {
 	// Type returns the corresponding [Type] for this cache.
 	Type() Type
-	// EntryNames invokes the given function for all the current entry names in the cache. If the function returns
-	// false, the iteration stops. The entries are iterated over in random order.
-	EntryNames(f func(name string) bool)
+	// EntryNames returns an [iter.Seq] that will iterate over all the current entry names in the cache.
+	EntryNames() iter.Seq[string]
 	// GetRaw is the untyped equivalent of Cache.Get. There are uses for this method, but the preferred
 	// way is to use Cache.Get because this function incurs the cost of marshaling the resource. Returns
 	// an error if the resource cannot be marshaled.
@@ -163,8 +163,10 @@ func NewPrioritizedCache[T proto.Message](prioritySlots int) []Cache[T] {
 func newCache[T proto.Message](prioritySlots int) *cache[T] {
 	ref := TypeOf[T]()
 	return &cache[T]{
-		typeReference: ref,
-		prioritySlots: prioritySlots,
+		typeReference:   ref,
+		prioritySlots:   prioritySlots,
+		resources:       internal.NewResourceMap[string, *internal.WatchableValue[T]](),
+		globCollections: internal.NewGlobCollectionsMap[T](),
 	}
 }
 
@@ -180,7 +182,7 @@ type cache[T proto.Message] struct {
 	// in this cache satisfy this invariant.
 	typeReference TypeReference[T]
 	// This resourceMap maps the resource's name to its corresponding WatchableValue.
-	resources internal.ResourceMap[string, *internal.WatchableValue[T]]
+	resources *internal.ResourceMap[string, *internal.WatchableValue[T]]
 	// The number of slots watchableValue instances should be created with (see NewPrioritizedCache for
 	// details on the cache priority).
 	prioritySlots int
@@ -189,7 +191,7 @@ type cache[T proto.Message] struct {
 	// This secondary data structure is updated any time a resource that belongs to a glob collection is
 	// added or removed from the map. Resources belong to glob collections if their name is a xdstp URN
 	// (see ExtractGlobCollectionURLFromResourceURN).
-	globCollections internal.GlobCollectionsMap[T]
+	globCollections *internal.GlobCollectionsMap[T]
 }
 
 func (c *cache[T]) Type() Type {
@@ -205,7 +207,7 @@ func (c *cache[T]) IsSubscribedTo(name string, handler ads.SubscriptionHandler[T
 		return c.globCollections.IsSubscribed(gcURL, handler)
 	}
 
-	c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
+	c.resources.ComputeIfPresent(name, func(value *internal.WatchableValue[T]) {
 		subscribed = value.IsSubscribed(handler)
 	})
 
@@ -239,12 +241,12 @@ func (c *cache[T]) Subscribe(name string, handler ads.SubscriptionHandler[T]) {
 	if name == ads.WildcardSubscription {
 		subscribedAt, version := c.wildcardSubscribers.Subscribe(handler)
 
-		for name := range c.EntryNames {
+		for name := range c.EntryNames() {
 			// Cannot call c.Subscribe here because it always creates a backing watchableValue if it does not
 			// already exist. For wildcard subscriptions, if the entry doesn't exist (or in this case has been
 			// deleted), a subscription isn't necessary. If the entry reappears, it will be automatically
 			// subscribed to.
-			c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
+			c.resources.ComputeIfPresent(name, func(value *internal.WatchableValue[T]) {
 				appendWg(value.NotifyHandlerAfterSubscription(
 					handler,
 					internal.WildcardSubscription,
@@ -256,8 +258,8 @@ func (c *cache[T]) Subscribe(name string, handler ads.SubscriptionHandler[T]) {
 	} else if gcURL, err := ads.ParseGlobCollectionURL[T](name); err == nil {
 		waitGroups = c.globCollections.Subscribe(gcURL, handler)
 	} else {
-		c.createOrModifyEntry(name, func(name string, value *internal.WatchableValue[T]) {
-			appendWg(value.Subscribe(handler))
+		c.createOrModifyEntry(name, func(v *internal.WatchableValue[T]) {
+			appendWg(v.Subscribe(handler))
 		})
 	}
 }
@@ -277,7 +279,7 @@ func parseGlobCollectionURN[T proto.Message](name string) (ads.GlobCollectionURL
 }
 
 // createOrModifyEntry executes the given function on the value of that name after ensuring that it exists in the map.
-func (c *cache[T]) createOrModifyEntry(name string, f func(name string, value *internal.WatchableValue[T])) {
+func (c *cache[T]) createOrModifyEntry(name string, f func(v *internal.WatchableValue[T])) {
 	c.resources.Compute(
 		name,
 		func(name string) *internal.WatchableValue[T] {
@@ -294,32 +296,38 @@ func (c *cache[T]) createOrModifyEntry(name string, f func(name string, value *i
 	)
 }
 
-// deleteEntryIfNilAndNoSubscribers attempts to delete the entry of that name from the map, if it exists. If the entry
-// exists, it grabs the write lock, deletes the entry from the map then closes the watchableValue.newValue channel,
-// signaling to the notification goroutine that this entry will not be updated anymore.
-func (c *cache[T]) deleteEntryIfNilAndNoSubscribers(name string) {
-	c.resources.DeleteIf(name, func(name string, value *internal.WatchableValue[T]) bool {
-		subs := value.SubscriberSets[internal.ExplicitSubscription]
+// deleteAfterOpIfEmpty applies the given op to the entry in the map (if it exists) while holding the
+// lock on the entry (this is done via [internal.ResourceMap.DeleteIf], which prevents other
+// operations on that entry). If, as a result of the op, the entry is now nil, has no subscribers,
+// and the backing [internal.WatchableValue]'s notification loop is not running, it is deleted. If it
+// is not nil or has an explicit subscriber, it is not deleted, and if the notification loop is
+// running, the deletion is queued to be executed by the goroutine currently executing the
+// notification loop.
+func (c *cache[T]) deleteAfterOpIfEmpty(name string, op func(v *internal.WatchableValue[T])) {
+	c.resources.ComputeDeletion(name, func(v *internal.WatchableValue[T]) bool {
+		if op != nil {
+			op(v)
+		}
+
+		subs := v.SubscriberSets[internal.ExplicitSubscription]
 		if !subs.IsEmpty() {
-			// It's possible that between releasing the read lock and acquiring the write lock, the entry was
-			// resubscribed to, in which case it is no longer eligible for deletion.
 			return false
 		}
-		// At this point, because the write lock is held, no new *explicit* subscribers will be added.
-		// However, a notification loop can still be running due to glob or wildcard subscribers. In this
-		// case, the deletion should only be attempted once the notification loop stops.
-		// DeleteNowOrQueueDeletion checks whether the value is empty and the notification loop is not
-		// running and returns true if the entry can be deleted. Otherwise, it schedules re-invoking this
-		// function after the notification loop ends. Deleting the entry without checking whether the
-		// notification loop is running can result in multiple WatchableValues created for the same resource,
-		// and therefore multiple, competing notification loops which can result in non-deterministic
-		// behavior.
-		if !value.DeleteNowOrQueueDeletion(c.deleteEntryIfNilAndNoSubscribers) {
+
+		// At this point, because the lock is held, no new *explicit* subscribers will be added. However, a
+		// notification loop can still be running due to glob or wildcard subscribers. In this case, the
+		// deletion should only be attempted once the notification loop stops. DeleteNowOrQueueDeletion
+		// checks whether the value is empty and the notification loop is not running and returns true if the
+		// entry can be deleted. Otherwise, it schedules re-invoking this function after the notification
+		// loop ends. Deleting the entry without checking whether the notification loop is running can result
+		// in multiple WatchableValues created for the same resource, and therefore multiple, competing
+		// notification loops which can result in non-deterministic behavior.
+		if !v.DeleteNowOrQueueDeletion(func(name string) { c.deleteAfterOpIfEmpty(name, nil) }) {
 			return false
 		}
 
 		if gcURL, err := parseGlobCollectionURN[T](name); err == nil {
-			c.globCollections.RemoveValueFromCollection(gcURL, value)
+			c.globCollections.RemoveValueFromCollection(gcURL, v)
 		}
 		return true
 	})
@@ -330,14 +338,9 @@ func (c *cache[T]) deleteEntryIfNilAndNoSubscribers(name string) {
 // subscription in the backing watchableValue (see Cache.DisableWildcardSubscription for more details on why this
 // exists)
 func (c *cache[T]) unsubscribe(name string, handler ads.SubscriptionHandler[T]) {
-	var shouldDelete bool
-	c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
-		hasNoExplicitSubscribers := value.Unsubscribe(handler)
-		shouldDelete = hasNoExplicitSubscribers && value.Read() == nil
+	c.deleteAfterOpIfEmpty(name, func(v *internal.WatchableValue[T]) {
+		v.Unsubscribe(handler)
 	})
-	if shouldDelete {
-		c.deleteEntryIfNilAndNoSubscribers(name)
-	}
 }
 
 func (c *cache[T]) Unsubscribe(name string, handler ads.SubscriptionHandler[T]) {
@@ -351,7 +354,7 @@ func (c *cache[T]) Unsubscribe(name string, handler ads.SubscriptionHandler[T]) 
 }
 
 func (c *cache[T]) Get(name string) (r *ads.Resource[T]) {
-	c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
+	c.resources.ComputeIfPresent(name, func(value *internal.WatchableValue[T]) {
 		r = value.Read()
 	})
 	return r
@@ -365,8 +368,8 @@ func (c *cache[T]) GetRaw(name string) (*ads.RawResource, error) {
 	return r.Marshal()
 }
 
-func (c *cache[T]) EntryNames(f func(name string) bool) {
-	c.resources.Keys(f)
+func (c *cache[T]) EntryNames() iter.Seq[string] {
+	return c.resources.Keys()
 }
 
 var _ Cache[proto.Message] = (*cacheWithPriority[proto.Message])(nil)
@@ -387,13 +390,9 @@ type cacheWithPriority[T proto.Message] struct {
 }
 
 func (c *cacheWithPriority[T]) Clear(name string, clearedAt time.Time) {
-	var shouldDelete bool
-	c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
-		shouldDelete = value.Clear(c.p, clearedAt) && value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
+	c.deleteAfterOpIfEmpty(name, func(v *internal.WatchableValue[T]) {
+		v.Clear(c.p, clearedAt)
 	})
-	if shouldDelete {
-		c.deleteEntryIfNilAndNoSubscribers(name)
-	}
 }
 
 func (c *cacheWithPriority[T]) Set(name, version string, t T, modifiedAt time.Time) *ads.Resource[T] {
@@ -407,8 +406,8 @@ func (c *cacheWithPriority[T]) Set(name, version string, t T, modifiedAt time.Ti
 }
 
 func (c *cacheWithPriority[T]) SetResource(r *ads.Resource[T], modifiedAt time.Time) {
-	c.createOrModifyEntry(r.Name, func(name string, value *internal.WatchableValue[T]) {
-		value.Set(c.p, r, modifiedAt)
+	c.createOrModifyEntry(r.Name, func(v *internal.WatchableValue[T]) {
+		v.Set(c.p, r, modifiedAt)
 	})
 }
 

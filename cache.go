@@ -296,14 +296,14 @@ func (c *cache[T]) createOrModifyEntry(name string, f func(v *internal.Watchable
 	)
 }
 
-// deleteAfterOpIfEmpty applies the given op to the entry in the map (if it exists) while holding the
-// lock on the entry (this is done via [internal.ResourceMap.DeleteIf], which prevents other
-// operations on that entry). If, as a result of the op, the entry is now nil, has no subscribers,
-// and the backing [internal.WatchableValue]'s notification loop is not running, it is deleted. If it
-// is not nil or has an explicit subscriber, it is not deleted, and if the notification loop is
-// running, the deletion is queued to be executed by the goroutine currently executing the
-// notification loop.
-func (c *cache[T]) deleteAfterOpIfEmpty(name string, op func(v *internal.WatchableValue[T])) {
+// deleteAfterOpIfNilAndNotSubscribed applies the given op to the entry in the map (if it exists)
+// while holding the lock on the entry (this is done via [internal.ResourceMap.DeleteIf], which
+// prevents other operations on that entry). If, as a result of the op, the entry is now nil, has no
+// subscribers, and the backing [internal.WatchableValue]'s notification loop is not running, it is
+// deleted. If it is not nil or has an explicit subscriber, it is not deleted, and if the
+// notification loop is running, the deletion is queued to be executed by the goroutine currently
+// executing the notification loop.
+func (c *cache[T]) deleteAfterOpIfNilAndNotSubscribed(name string, op func(v *internal.WatchableValue[T])) {
 	c.resources.ComputeDeletion(name, func(v *internal.WatchableValue[T]) bool {
 		if op != nil {
 			op(v)
@@ -322,7 +322,7 @@ func (c *cache[T]) deleteAfterOpIfEmpty(name string, op func(v *internal.Watchab
 		// loop ends. Deleting the entry without checking whether the notification loop is running can result
 		// in multiple WatchableValues created for the same resource, and therefore multiple, competing
 		// notification loops which can result in non-deterministic behavior.
-		if !v.DeleteNowOrQueueDeletion(func(name string) { c.deleteAfterOpIfEmpty(name, nil) }) {
+		if !v.DeleteNowOrQueueDeletion(func(name string) { c.deleteAfterOpIfNilAndNotSubscribed(name, nil) }) {
 			return false
 		}
 
@@ -338,7 +338,7 @@ func (c *cache[T]) deleteAfterOpIfEmpty(name string, op func(v *internal.Watchab
 // subscription in the backing watchableValue (see Cache.DisableWildcardSubscription for more details on why this
 // exists)
 func (c *cache[T]) unsubscribe(name string, handler ads.SubscriptionHandler[T]) {
-	c.deleteAfterOpIfEmpty(name, func(v *internal.WatchableValue[T]) {
+	c.deleteAfterOpIfNilAndNotSubscribed(name, func(v *internal.WatchableValue[T]) {
 		v.Unsubscribe(handler)
 	})
 }
@@ -394,7 +394,7 @@ type cacheWithPriority[T proto.Message] struct {
 }
 
 func (c *cacheWithPriority[T]) Clear(name string, clearedAt time.Time) {
-	c.deleteAfterOpIfEmpty(name, func(v *internal.WatchableValue[T]) {
+	c.deleteAfterOpIfNilAndNotSubscribed(name, func(v *internal.WatchableValue[T]) {
 		v.Clear(c.p, clearedAt)
 	})
 }

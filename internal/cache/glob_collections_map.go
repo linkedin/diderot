@@ -32,7 +32,7 @@ func (gcm *GlobCollectionsMap[T]) createOrModifyCollection(
 	gcURL ads.GlobCollectionURL,
 	f func(collection *globCollection[T]),
 ) *globCollection[T] {
-	return gcm.collections.Compute(
+	gc, _ := gcm.collections.Compute(
 		gcURL,
 		func(gcURL ads.GlobCollectionURL) *globCollection[T] {
 			gc := newGlobCollection[T](gcURL.String())
@@ -41,6 +41,7 @@ func (gcm *GlobCollectionsMap[T]) createOrModifyCollection(
 		},
 		f,
 	)
+	return gc
 }
 
 // PutValueInCollection creates the glob collection if it was not already created, and puts the given

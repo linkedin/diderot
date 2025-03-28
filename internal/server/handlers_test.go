@@ -27,7 +27,7 @@ func TestHandlerDebounce(t *testing.T) {
 	var enterSendWg, continueSendWg sync.WaitGroup
 	continueSendWg.Add(1)
 
-	actualResources := make(map[string]*ads.RawResource)
+	actualResources := make(sendBuffer)
 
 	h := newHandler(
 		testutils.Context(t),
@@ -35,7 +35,7 @@ func TestHandlerDebounce(t *testing.T) {
 		l,
 		new(customStatsHandler),
 		false,
-		func(resources map[string]*ads.RawResource) error {
+		func(resources sendBuffer) error {
 			require.True(t, released.Swap(false), "send invoked without being released")
 			require.NotEmpty(t, resources)
 			enterSendWg.Done()
@@ -86,7 +86,7 @@ func TestHandlerDebounce(t *testing.T) {
 	released.Store(true)
 	l.Release()
 	require.Equal(t,
-		map[string]*ads.RawResource{
+		sendBuffer{
 			foo: nil,
 		},
 		actualResources)
@@ -97,7 +97,7 @@ func TestHandlerDebounce(t *testing.T) {
 	l.Release()
 	require.Equal(
 		t,
-		map[string]*ads.RawResource{
+		sendBuffer{
 			bar: barR,
 		},
 		actualResources,
@@ -106,7 +106,7 @@ func TestHandlerDebounce(t *testing.T) {
 
 func TestHandlerBatching(t *testing.T) {
 	var released atomic.Bool
-	ch := make(chan map[string]*ads.RawResource)
+	ch := make(chan sendBuffer)
 	granular := NewTestHandlerLimiter()
 	h := newHandler(
 		testutils.Context(t),
@@ -114,7 +114,7 @@ func TestHandlerBatching(t *testing.T) {
 		NoopLimiter{},
 		new(customStatsHandler),
 		false,
-		func(resources map[string]*ads.RawResource) error {
+		func(resources sendBuffer) error {
 			// Double check that send isn't invoked before it's expected
 			if !released.Load() {
 				t.Fatalf("send invoked before release!")
@@ -123,14 +123,14 @@ func TestHandlerBatching(t *testing.T) {
 			return nil
 		},
 	)
-	expectedEntries := make(map[string]*ads.RawResource)
+	expectedEntries := make(sendBuffer)
 	notify := func() {
 		name := strconv.Itoa(len(expectedEntries))
 		h.Notify(name, nil, ads.SubscriptionMetadata{})
 		expectedEntries[name] = nil
 	}
 
-	h.StartNotificationBatch(nil)
+	h.StartNotificationBatch(nil, 0)
 	notify()
 
 	for i := 0; i < 100; i++ {
@@ -162,12 +162,12 @@ func TestHandlerDoesNothingOnEmptyBatch(t *testing.T) {
 		nil,
 		new(customStatsHandler),
 		false,
-		func(_ map[string]*ads.RawResource) error {
+		func(_ sendBuffer) error {
 			require.Fail(t, "notify called")
 			return nil
 		},
 	)
-	h.StartNotificationBatch(nil)
+	h.StartNotificationBatch(nil, 0)
 	h.EndNotificationBatch()
 }
 
@@ -226,14 +226,14 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		bar = "bar"
 	)
 	var released atomic.Bool
-	ch := make(chan map[string]*ads.RawResource)
+	ch := make(chan sendBuffer)
 	handler := newHandler(
 		testutils.Context(t),
 		NoopLimiter{},
 		NoopLimiter{},
 		new(customStatsHandler),
 		false,
-		func(resources map[string]*ads.RawResource) error {
+		func(resources sendBuffer) error {
 			ch <- maps.Clone(resources)
 			return nil
 		},
@@ -244,24 +244,24 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 
 	t.Run("partial update, foo not updated and bar updated", func(t *testing.T) {
 		req := newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
-		handler.StartNotificationBatch(req.InitialResourceVersions)
+		handler.StartNotificationBatch(req.InitialResourceVersions, 0)
 		fooResource := newRawResource(foo, "0")
 		barResource := newRawResource(bar, "1")
 		notify(foo, fooResource)
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, map[string]*ads.RawResource{barResource.Name: barResource}, <-ch)
+		require.Equal(t, sendBuffer{barResource.Name: barResource}, <-ch)
 	})
 
 	t.Run("partial update, foo deleted and bar updated", func(t *testing.T) {
 		req := newDeltaReq([]string{foo, bar}, map[string]string{foo: "0", bar: "0"})
-		handler.StartNotificationBatch(req.InitialResourceVersions)
+		handler.StartNotificationBatch(req.InitialResourceVersions, 0)
 		barResource := newRawResource(bar, "1")
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, map[string]*ads.RawResource{
+		require.Equal(t, sendBuffer{
 			barResource.Name: barResource,
 			foo:              nil,
 		}, <-ch)
@@ -269,12 +269,12 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 
 	t.Run("partial update, foo deleted and bar updated with wildcard subscription", func(t *testing.T) {
 		req := newDeltaReq([]string{ads.WildcardSubscription}, map[string]string{foo: "0", bar: "0"})
-		handler.StartNotificationBatch(req.InitialResourceVersions)
+		handler.StartNotificationBatch(req.InitialResourceVersions, 0)
 		barResource := newRawResource(bar, "1")
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, map[string]*ads.RawResource{
+		require.Equal(t, sendBuffer{
 			barResource.Name: barResource,
 			foo:              nil,
 		}, <-ch)

@@ -57,7 +57,7 @@ func newDeltaHandler(
 		globalLimiter,
 		statsHandler,
 		false,
-		func(entries map[string]*ads.RawResource) error {
+		func(entries sendBuffer) error {
 			for i, chunk := range ds.chunk(entries) {
 				if i > 0 {
 					// Respect the global limiter in between chunks

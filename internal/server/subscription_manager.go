@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"github.com/linkedin/diderot/ads"
@@ -38,10 +39,11 @@ type SubscriptionManager[REQ proto.Message] interface {
 // deltaSubscriptionManager and sotWSubscriptionManager to deduplicate the subscription tracking
 // logic.
 type subscriptionManagerCore struct {
-	ctx     context.Context
-	locator ResourceLocator
-	typeURL string
-	handler BatchSubscriptionHandler
+	ctx           context.Context
+	locator       ResourceLocator
+	typeURL       string
+	handler       BatchSubscriptionHandler
+	sizeEstimator SendBufferSizeEstimator
 
 	lock          sync.Mutex
 	subscriptions map[string]func()
@@ -113,13 +115,16 @@ func NewSotWSubscriptionManager(
 //
 // [the spec]: https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol.html#how-the-client-specifies-what-resources-to-return
 func (m *deltaSubscriptionManager) ProcessSubscriptions(req *ads.DeltaDiscoveryRequest) {
-	m.handler.StartNotificationBatch(req.InitialResourceVersions)
+	subscribe, estimatedSize := m.cleanSubscriptionsAndEstimateSize(
+		req.ResourceNamesSubscribe, req.InitialResourceVersions,
+	)
+
+	m.handler.StartNotificationBatch(req.InitialResourceVersions, estimatedSize)
 	defer m.handler.EndNotificationBatch()
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	subscribe := req.ResourceNamesSubscribe
 	if !m.firstCallReceived {
 		m.firstCallReceived = true
 		if len(subscribe) == 0 {
@@ -144,13 +149,14 @@ func (m *deltaSubscriptionManager) ProcessSubscriptions(req *ads.DeltaDiscoveryR
 //
 // [the spec]: https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol.html#how-the-client-specifies-what-resources-to-return
 func (m *sotWSubscriptionManager) ProcessSubscriptions(req *ads.SotWDiscoveryRequest) {
-	m.handler.StartNotificationBatch(nil)
+	subscribe, estimatedSize := m.cleanSubscriptionsAndEstimateSize(req.ResourceNames, nil)
+
+	m.handler.StartNotificationBatch(nil, estimatedSize)
 	defer m.handler.EndNotificationBatch()
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	subscribe := req.ResourceNames
 	m.receivedExplicitSubscriptions = m.receivedExplicitSubscriptions || len(subscribe) != 0
 	if !m.receivedExplicitSubscriptions {
 		subscribe = []string{ads.WildcardSubscription}
@@ -204,4 +210,21 @@ func (c *subscriptionManagerCore) unsubscribe(name string) {
 		unsub()
 		delete(c.subscriptions, name)
 	}
+}
+
+// cleanSubscriptionsAndEstimateSize clones the given slice and removes duplicate elements by sorting
+// it. This ensures that the server does not process the same subscription twice for the same
+// request. It then estimates the size of send buffer to pass to
+// [BatchSubscriptionHandler.StartNotificationBatch] if a [SendBufferSizeEstimator] was provided.
+func (c *subscriptionManagerCore) cleanSubscriptionsAndEstimateSize(
+	resourceNamesSubscribe []string,
+	initialResourceVersions map[string]string,
+) (cleaned []string, size int) {
+	cleaned = slices.Clone(resourceNamesSubscribe)
+	slices.Sort(cleaned)
+	cleaned = slices.Compact(cleaned)
+	if len(initialResourceVersions) > 0 && c.sizeEstimator != nil {
+		size = c.sizeEstimator.EstimateSubscriptionSize(c.typeURL, cleaned)
+	}
+	return cleaned, size
 }

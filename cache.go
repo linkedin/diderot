@@ -130,6 +130,10 @@ type RawCache interface {
 	// unknown (or ignored). For example, when watching a directory, the filesystem does not keep track
 	// of when the file was deleted.
 	Clear(name string, clearedAt time.Time)
+	// EstimateSubscriptionSize estimates the number of resources targeted by the given list of
+	// subscriptions. This is only an estimation since the resource count is dynamic, and repeated
+	// invocations of this function with the same parameters may not yield the same results.
+	EstimateSubscriptionSize(resourceNamesSubscribe []string) int
 }
 
 // NewCache returns a simple Cache with only 1 priority (see NewPrioritizedCache).
@@ -262,6 +266,21 @@ func (c *cache[T]) Subscribe(name string, handler ads.SubscriptionHandler[T]) {
 			appendWg(v.Subscribe(handler))
 		})
 	}
+}
+
+func (c *cache[T]) EstimateSubscriptionSize(resourceNamesSubscribe []string) (resources int) {
+	for _, name := range resourceNamesSubscribe {
+		if name == ads.WildcardSubscription {
+			// If the subscription includes a wildcard, it will target all resources, so immediately return the
+			// size of the cache.
+			return c.resources.Size()
+		} else if gcURL, err := ads.ParseGlobCollectionURL[T](name); err == nil {
+			resources += c.globCollections.Size(gcURL)
+		} else {
+			resources++
+		}
+	}
+	return resources
 }
 
 // parseGlobCollectionURN checks if the given name is a valid glob collection URN. Note: by

@@ -136,3 +136,13 @@ func (gcm *GlobCollectionsMap[T]) IsSubscribed(gcURL ads.GlobCollectionURL, hand
 	})
 	return subscribed
 }
+
+// Size returns the size of the glob collection for the given URL, or 0 if no such collection exists.
+func (gcm *GlobCollectionsMap[T]) Size(gcURL ads.GlobCollectionURL) (size int) {
+	gcm.collections.ComputeIfPresent(gcURL, func(collection *globCollection[T]) {
+		collection.lock.RLock()
+		defer collection.lock.RUnlock()
+		size = len(collection.nonNilValueNames)
+	})
+	return size
+}

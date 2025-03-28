@@ -26,7 +26,8 @@ var _ ads.Server = (*ADSServer)(nil)
 type ADSServer struct {
 	discovery.UnimplementedAggregatedDiscoveryServiceServer
 
-	locator ResourceLocator
+	locator                 ResourceLocator
+	sendBufferSizeEstimator SendBufferSizeEstimator
 
 	requestLimiter       *rate.Limiter
 	globalLimiter        *rate.Limiter
@@ -133,6 +134,38 @@ func WithMaxDeltaResponseSize(maxResponseSize int) ADSServerOption {
 func WithControlPlane(controlPlane *corev3.ControlPlane) ADSServerOption {
 	return serverOption(func(s *ADSServer) {
 		s.controlPlane = controlPlane
+	})
+}
+
+// A SendBufferSizeEstimator is used to estimate a size to pre-allocate the send buffer used by the
+// [ADSServer]. More specifically, when the server responds to a subscription request, it will use a
+// map to buffer the resources that correspond to the newly added subscriptions until all
+// subscriptions are processed. This helps limit the number of responses sent.
+//
+// Depending on the size of the subscription (e.g. a wildcard subscription will target many
+// resources), adding each resource to the map will grow the map, resulting in repeated copies and
+// lots of memory movement. As such, the estimator, if provided, will be invoked by the server to
+// determine the size of the send buffer map to create, in order to hopefully avoid expensive
+// re-allocations.
+//
+// However, if the client provides [initial resource versions] along with its subscription request, the
+// estimator will not be invoked, as it may result in pre-allocating a very large map that will likely
+// not be fully utilized.
+//
+// For convenience, this is trivially implemented by [RawCache.EstimateSubscriptionSize].
+//
+// [initial resource versions]: https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/discovery/v3/discovery.proto#service-discovery-v3-deltadiscoveryrequest
+type SendBufferSizeEstimator interface {
+	// EstimateSubscriptionSize returns the expected number of resources that will be sent back as a
+	// result of the given resource names.
+	EstimateSubscriptionSize(typeURL string, resourceNamesSubscribe []string) int
+}
+
+// WithSendBufferSizeEstimator provides a [SendBufferSizeEstimator] that will be invoked when the
+// [ADSServer] responds to subscription requests.
+func WithSendBufferSizeEstimator(sizeEstimator SendBufferSizeEstimator) ADSServerOption {
+	return serverOption(func(s *ADSServer) {
+		s.sendBufferSizeEstimator = sizeEstimator
 	})
 }
 

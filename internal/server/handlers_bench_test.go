@@ -28,7 +28,7 @@ func benchmarkHandlers(tb testing.TB, count, subscriptions int) {
 		NoopLimiter{},
 		new(customStatsHandler),
 		false,
-		func(resources map[string]*ads.RawResource) error {
+		func(resources sendBuffer) error {
 			for _, r := range resources {
 				if r.Version == finalVersion {
 					finished.Done()

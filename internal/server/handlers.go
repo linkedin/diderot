@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"time"
 
@@ -12,6 +13,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// SendBufferSizeEstimator is a copy of the interface in the root package, to avoid import cycles.
+type SendBufferSizeEstimator interface {
+	EstimateSubscriptionSize(typeURL string, resourceNamesSubscribe []string) int
+}
+
 // BatchSubscriptionHandler is an extension of the SubscriptionHandler interface in the root package
 // which allows a handler to be notified that a batch of calls to Notify is about to be received
 // (StartNotificationBatch). The batch of notifications should not be sent to the client until all
@@ -20,10 +26,12 @@ import (
 // StartNotificationBatch immediately preceding it. However, SubscriptionHandler.Notify can be
 // invoked at any point.
 type BatchSubscriptionHandler interface {
-	StartNotificationBatch(map[string]string)
+	StartNotificationBatch(map[string]string, int)
 	ads.RawSubscriptionHandler
 	EndNotificationBatch()
 }
+
+type sendBuffer map[string]*ads.RawResource
 
 func newHandler(
 	ctx context.Context,
@@ -31,7 +39,7 @@ func newHandler(
 	globalLimiter handlerLimiter,
 	statsHandler serverstats.Handler,
 	ignoreDeletes bool,
-	send func(entries map[string]*ads.RawResource) error,
+	send func(entries sendBuffer) error,
 ) *handler {
 	h := &handler{
 		granularLimiter:               granularLimiter,
@@ -79,9 +87,7 @@ func (ch notifyOnceChan) reset() {
 	}
 }
 
-var entryMapPool = sync.Pool{New: func() any {
-	return make(map[string]*ads.RawResource)
-}}
+var sendBufferPool = sync.Pool{New: func() any { return make(sendBuffer) }}
 
 // handler implements the BatchSubscriptionHandler interface using a backing map to aggregate updates
 // as they come in, and flushing them out, according to when the limiter permits it.
@@ -92,9 +98,9 @@ type handler struct {
 	lock            sync.Mutex
 	ctx             context.Context
 	ignoreDeletes   bool
-	send            func(entries map[string]*ads.RawResource) error
+	send            func(entries sendBuffer) error
 
-	entries map[string]*ads.RawResource
+	entries sendBuffer
 
 	// The following notifyOnceChan instances are the signaling mechanism between loop and Notify. Calls
 	// to Notify will first invoke notifyOnceChan.notify on immediateNotificationReceived based on the
@@ -132,7 +138,7 @@ type initialResourceVersion struct {
 
 // swapEntries grabs the lock then swaps the entries map to a nil map. It resets notificationReceived
 // and immediateNotificationReceived, and returns original entries map that was swapped.
-func (h *handler) swapEntries() map[string]*ads.RawResource {
+func (h *handler) swapEntries() sendBuffer {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 	entries := h.entries
@@ -164,7 +170,7 @@ func (h *handler) loop() {
 
 		// Return the used map to the pool after clearing it.
 		clear(entries)
-		entryMapPool.Put(entries)
+		sendBufferPool.Put(entries)
 
 		if err != nil {
 			return
@@ -239,7 +245,7 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 	}
 
 	if h.entries == nil {
-		h.entries = entryMapPool.Get().(map[string]*ads.RawResource)
+		h.entries = sendBufferPool.Get().(sendBuffer)
 	}
 
 	if h.handleMatchFromIRV(name, r) {
@@ -279,7 +285,7 @@ func (h *handler) ResourceMarshalError(name string, resource proto.Message, err 
 	}
 }
 
-func (h *handler) StartNotificationBatch(initialResourceVersions map[string]string) {
+func (h *handler) StartNotificationBatch(initialResourceVersions map[string]string, estimatedSize int) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
@@ -288,6 +294,19 @@ func (h *handler) StartNotificationBatch(initialResourceVersions map[string]stri
 		h.initialResourceVersions = make(map[string]*initialResourceVersion, len(initialResourceVersions))
 		for name, version := range initialResourceVersions {
 			h.initialResourceVersions[name] = &initialResourceVersion{version: version}
+		}
+	} else if estimatedSize > 0 {
+		// Only preallocate the send buffer if the initialResourceVersions is empty. Otherwise, it's very
+		// likely that the buffer will be underutilized and waste resources.
+		prevBuf := h.entries
+		h.entries = make(sendBuffer, estimatedSize+len(prevBuf))
+
+		if len(prevBuf) > 0 {
+			// Is possible that some notifications were already pending, so ensure those are not lost before
+			// returning the  to the pool.
+			maps.Copy(h.entries, prevBuf)
+			clear(prevBuf)
+			sendBufferPool.Put(prevBuf)
 		}
 	}
 	h.batchStarted = true
@@ -354,9 +373,9 @@ func newSotWHandler(
 	send func(res *ads.SotWDiscoveryResponse) error,
 ) *handler {
 	isPseudoDeltaSotW := utils.IsPseudoDeltaSotW(typeUrl)
-	var looper func(resources map[string]*ads.RawResource) error
+	var looper func(resources sendBuffer) error
 	if isPseudoDeltaSotW {
-		looper = func(entries map[string]*ads.RawResource) error {
+		looper = func(entries sendBuffer) error {
 			versions := map[string]string{}
 
 			for name, e := range entries {
@@ -374,10 +393,10 @@ func newSotWHandler(
 			return send(res)
 		}
 	} else {
-		allResources := map[string]*ads.RawResource{}
+		allResources := sendBuffer{}
 		versions := map[string]string{}
 
-		looper = func(resources map[string]*ads.RawResource) error {
+		looper = func(resources sendBuffer) error {
 			for name, r := range resources {
 				if r != nil {
 					allResources[name] = r

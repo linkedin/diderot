@@ -2,6 +2,7 @@ package diderot_test
 
 import (
 	"fmt"
+	"iter"
 	"maps"
 	"math/rand/v2"
 	"slices"
@@ -378,15 +379,15 @@ func TestWatchableValueUpdateCancel(t *testing.T) {
 func TestCacheEntryDeletion(t *testing.T) {
 	h := make(testutils.ChanSubscriptionHandler[*Timestamp], 1)
 
-	inCache := func(c diderot.Cache[*Timestamp]) bool {
-		inCache := false
-		for name := range c.EntryNames() {
+	inCache := func(cache diderot.Cache[*Timestamp]) bool {
+		c := cache.(interface{ AllEntryNames() iter.Seq[string] })
+
+		for name := range c.AllEntryNames() {
 			if name == name1 {
-				inCache = true
-				break
+				return true
 			}
 		}
-		return inCache
+		return false
 	}
 	checkEntryExists := func(t *testing.T, c diderot.Cache[*Timestamp]) {
 		require.Truef(t, inCache(c), "%q not in cache!", name1)

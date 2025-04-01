@@ -370,6 +370,21 @@ func (c *cache[T]) GetRaw(name string) (*ads.RawResource, error) {
 
 func (c *cache[T]) EntryNames() iter.Seq[string] {
 	return func(yield func(string) bool) {
+		c.resources.Range()(func(k string, v *internal.WatchableValue[T]) bool {
+			if v.Read() == nil {
+				return true
+			}
+			return yield(k)
+		})
+	}
+}
+
+// AllEntryNames unlike its cousin EntryNames returns the names of the entries that are present in
+// the cache even if they are nil. It is used exclusively in testing, and is effectively private, as
+// it is not exposed by the [Cache] interface. It cannot however be literally private (i.e. lowercase
+// allEntryNames) because the tests are executed from a different package.
+func (c *cache[T]) AllEntryNames() iter.Seq[string] {
+	return func(yield func(string) bool) {
 		c.resources.Range()(func(k string, _ *internal.WatchableValue[T]) bool {
 			return yield(k)
 		})

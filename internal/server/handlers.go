@@ -31,6 +31,8 @@ type BatchSubscriptionHandler interface {
 	EndNotificationBatch()
 }
 
+// sendBuffer is an alias for the map type used by the handler to accumulate pending resource updates
+// before sending them to the client.
 type sendBuffer map[string]*ads.RawResource
 
 func newHandler(

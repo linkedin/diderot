@@ -10,6 +10,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// Benchmarks the actual notification loop. There was a problem where the loop was leaking something
+// to heap, causing it to add GC pressure.
 func BenchmarkNotificationLoop(b *testing.B) {
 	v := NewValue[*timestamppb.Timestamp]("foo", 1)
 	for range b.N {
@@ -17,6 +19,8 @@ func BenchmarkNotificationLoop(b *testing.B) {
 	}
 }
 
+// This benchmarks the worst case scenario, where a goroutine is re-created every time to deliver the
+// notification, instead of being reused because the resource update caused the loop to start over.
 func BenchmarkValueSetClear(b *testing.B) {
 	SetTimeProvider(func() (t time.Time) { return t })
 	b.Cleanup(func() {

@@ -13,7 +13,7 @@ import (
 type ResourceMap[K comparable, V any] xsync.Map[K, V]
 
 func NewResourceMap[K comparable, V any]() *ResourceMap[K, V] {
-	return (*ResourceMap[K, V])(xsync.NewMapOf[K, V]())
+	return (*ResourceMap[K, V])(xsync.NewMap[K, V]())
 }
 
 // Compute first creates the value for the given key using the given function if no corresponding

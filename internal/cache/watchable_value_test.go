@@ -14,7 +14,7 @@ import (
 // to heap, causing it to add GC pressure.
 func BenchmarkNotificationLoop(b *testing.B) {
 	v := NewValue[*timestamppb.Timestamp]("foo", 1)
-	for range b.N {
+	for b.Loop() {
 		v.notificationLoop()
 	}
 }
@@ -40,7 +40,7 @@ func BenchmarkValueSetClear(b *testing.B) {
 	done.Wait()
 
 	r := ads.NewResource("foo", "0", timestamppb.Now())
-	for range b.N {
+	for b.Loop() {
 		done.Add(1)
 		v.Set(0, r, time.Time{})
 		done.Wait()

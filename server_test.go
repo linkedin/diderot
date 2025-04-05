@@ -243,17 +243,15 @@ func TestEndToEnd(t *testing.T) {
 	_, err = rand.Read(testData.Value)
 	require.NoError(t, err)
 	testResource := ads.NewResource("testData", "0", testData)
-	clearEntry := func() {
-		bytesCache.Clear(testResource.Name, time.Now())
+	clearEntry := func(name string) {
+		bytesCache.Clear(name, time.Now())
 	}
-	setEntry := func(t *testing.T) {
-		bytesCache.SetResource(testResource, time.Now())
-		t.Cleanup(clearEntry)
-	}
-
 	setCacheEntry := func(t *testing.T, name string, version string) {
 		bytesCache.SetResource(ads.NewResource(name, version, testData), time.Now())
-		t.Cleanup(clearEntry)
+		t.Cleanup(func() { clearEntry(name) })
+	}
+	setEntry := func(t *testing.T) {
+		setCacheEntry(t, testResource.Name, testResource.Version)
 	}
 	newStream := func(t *testing.T) (ads.DeltaClient, context.CancelFunc) {
 		ctx, cancel := context.WithCancel(testutils.ContextWithTimeout(t, 5*time.Second))
@@ -308,7 +306,7 @@ func TestEndToEnd(t *testing.T) {
 			return statsHandler.ACKsReceived.Load() == 1
 		}, 2*time.Second, 100*time.Millisecond)
 
-		clearEntry()
+		clearEntry(testResource.Name)
 
 		waitForResponse(t, res, stream, 10*time.Millisecond)
 

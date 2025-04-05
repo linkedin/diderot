@@ -107,6 +107,23 @@ func getCache[T proto.Message](tl *testLocator) Cache[T] {
 	return tl.caches[TypeOf[T]().URL()].(Cache[T])
 }
 
+type mockSizeEstimator struct {
+	atomic.Pointer[func(typeURL string, resourceNamesSubscribe []string) int]
+}
+
+func (s *mockSizeEstimator) Set(f func(typeURL string, resourceNamesSubscribe []string) int) {
+	s.Store(&f)
+}
+
+func (s *mockSizeEstimator) EstimateSubscriptionSize(typeURL string, resourceNamesSubscribe []string) int {
+	f := s.Load()
+	if f == nil {
+		return 0
+	}
+
+	return (*f)(typeURL, resourceNamesSubscribe)
+}
+
 func TestEndToEnd(t *testing.T) {
 	locator := newTestLocator(
 		t,
@@ -172,6 +189,7 @@ func TestEndToEnd(t *testing.T) {
 	)
 
 	statsHandler := new(serverStatsHandler)
+	estimator := new(mockSizeEstimator)
 
 	s := NewADSServer(
 		locator,
@@ -179,6 +197,7 @@ func TestEndToEnd(t *testing.T) {
 		WithGlobalResponseRateLimit(0),
 		WithServerStatsHandler(statsHandler),
 		WithControlPlane(controlPlane),
+		WithSendBufferSizeEstimator(estimator),
 	)
 	discovery.RegisterAggregatedDiscoveryServiceServer(ts.Server, s)
 	ts.Start()
@@ -235,6 +254,12 @@ func TestEndToEnd(t *testing.T) {
 	setCacheEntry := func(t *testing.T, name string, version string) {
 		bytesCache.SetResource(ads.NewResource(name, version, testData), time.Now())
 		t.Cleanup(clearEntry)
+	}
+	newStream := func(t *testing.T) (ads.DeltaClient, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(testutils.ContextWithTimeout(t, 5*time.Second))
+		stream, err := client.DeltaAggregatedResources(ctx)
+		require.NoError(t, err)
+		return stream, cancel
 	}
 
 	t.Run("delta", func(t *testing.T) {
@@ -329,13 +354,6 @@ func TestEndToEnd(t *testing.T) {
 			TypeUrl: testResource.TypeURL(),
 		}
 
-		newStream := func() (ads.DeltaClient, context.CancelFunc) {
-			ctx, cancel := context.WithCancel(testutils.ContextWithTimeout(t, 5*time.Second))
-			stream, err := client.DeltaAggregatedResources(ctx)
-			require.NoError(t, err)
-			return stream, cancel
-		}
-
 		res := new(ads.DeltaDiscoveryResponse)
 
 		// Verify that using InitialResourceVersions prevents the server from resending unchanged resources upon re-subscription.
@@ -346,7 +364,7 @@ func TestEndToEnd(t *testing.T) {
 			bar: "0",
 		}
 		req.ResourceNamesSubscribe = []string{"foo", "bar"}
-		stream, cancel := newStream()
+		stream, cancel := newStream(t)
 		require.NoError(t, stream.Send(req))
 		waitForResponse(t, res, stream, 10*time.Millisecond)
 		require.Len(t, res.Resources, 1)
@@ -364,7 +382,7 @@ func TestEndToEnd(t *testing.T) {
 			bar: "1",
 		}
 		req.ResourceNamesSubscribe = []string{ads.WildcardSubscription}
-		stream, cancel = newStream()
+		stream, cancel = newStream(t)
 		require.NoError(t, stream.Send(req))
 		waitForResponse(t, res, stream, 10*time.Millisecond)
 		require.Len(t, res.RemovedResources, 1)
@@ -378,7 +396,7 @@ func TestEndToEnd(t *testing.T) {
 			foo: "0",
 			qux: "0",
 		}
-		stream, cancel = newStream()
+		stream, cancel = newStream(t)
 		require.NoError(t, stream.Send(req))
 		ch := make(chan error)
 		go func() {
@@ -531,6 +549,39 @@ func TestEndToEnd(t *testing.T) {
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource).Resource, res.Resources[0])
 	})
 
+	t.Run("size estimator integration", func(t *testing.T) {
+		const foo = "foo"
+
+		req := &ads.DeltaDiscoveryRequest{
+			Node:    locator.node,
+			TypeUrl: testResource.TypeURL(),
+		}
+
+		res := new(ads.DeltaDiscoveryResponse)
+
+		setCacheEntry(t, foo, "0")
+
+		req.ResourceNamesSubscribe = []string{ads.WildcardSubscription, ads.WildcardSubscription}
+		called := make(chan struct{})
+		estimator.Set(func(typeURL string, resourceNamesSubscribe []string) int {
+			if typeURL == req.TypeUrl {
+				close(called)
+			}
+			return 0
+		})
+
+		stream, cancel := newStream(t)
+		defer cancel()
+		require.NoError(t, stream.Send(req))
+		waitForResponse(t, res, stream, 10*time.Millisecond)
+		select {
+		case <-called:
+		default:
+			t.Fatalf("Estimator should have been called")
+		}
+		require.Len(t, res.Resources, 1)
+		require.Equal(t, res.Resources[0].Name, "foo")
+	})
 }
 
 type xDSResponse interface {
@@ -659,9 +710,9 @@ func TestSubscriptionManagerSubscriptions(t *testing.T) {
 				var sotw internal.SubscriptionManager[*ads.SotWDiscoveryRequest]
 				var delta internal.SubscriptionManager[*ads.DeltaDiscoveryRequest]
 				if streamType == ads.DeltaStreamType {
-					delta = internal.NewDeltaSubscriptionManager(testutils.Context(t), l, c.Type().URL(), h)
+					delta = internal.NewDeltaSubscriptionManager(testutils.Context(t), l, c.Type().URL(), h, nil)
 				} else {
-					sotw = internal.NewSotWSubscriptionManager(testutils.Context(t), l, c.Type().URL(), h)
+					sotw = internal.NewSotWSubscriptionManager(testutils.Context(t), l, c.Type().URL(), h, nil)
 				}
 
 				checkSubs(t, c, h, false, false, false)
@@ -703,9 +754,9 @@ func TestSubscriptionManagerSubscriptions(t *testing.T) {
 				var sotw internal.SubscriptionManager[*ads.SotWDiscoveryRequest]
 				var delta internal.SubscriptionManager[*ads.DeltaDiscoveryRequest]
 				if streamType == ads.DeltaStreamType {
-					delta = internal.NewDeltaSubscriptionManager(testutils.Context(t), l, c.Type().URL(), h)
+					delta = internal.NewDeltaSubscriptionManager(testutils.Context(t), l, c.Type().URL(), h, nil)
 				} else {
-					sotw = internal.NewSotWSubscriptionManager(testutils.Context(t), l, c.Type().URL(), h)
+					sotw = internal.NewSotWSubscriptionManager(testutils.Context(t), l, c.Type().URL(), h, nil)
 				}
 
 				// subscribe to r1 and r2
@@ -791,7 +842,7 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 	t.Run("SotW", func(t *testing.T) {
 		t.Run("empty first call", func(t *testing.T) {
 			l, wildcardSub, fooSub := newMockLocator(t)
-			m := internal.NewSotWSubscriptionManager(testutils.Context(t), l, typeURL, h)
+			m := internal.NewSotWSubscriptionManager(testutils.Context(t), l, typeURL, h, nil)
 
 			// The first call, if empty should always implicit create a wildcard subscription.
 			m.ProcessSubscriptions(newSotWReq())
@@ -809,7 +860,7 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 		})
 		t.Run("non-empty first call", func(t *testing.T) {
 			l, wildcardSub, fooSub := newMockLocator(t)
-			m := internal.NewSotWSubscriptionManager(testutils.Context(t), l, typeURL, h)
+			m := internal.NewSotWSubscriptionManager(testutils.Context(t), l, typeURL, h, nil)
 
 			// If the first call isn't empty, the implicit wildcard subscription should not be present.
 			m.ProcessSubscriptions(newSotWReq(foo))
@@ -818,7 +869,7 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 		})
 		t.Run("explicit wildcard", func(t *testing.T) {
 			l, wildcardSub, fooSub := newMockLocator(t)
-			m := internal.NewSotWSubscriptionManager(testutils.Context(t), l, typeURL, h)
+			m := internal.NewSotWSubscriptionManager(testutils.Context(t), l, typeURL, h, nil)
 
 			m.ProcessSubscriptions(newSotWReq(ads.WildcardSubscription))
 			requireSelect(t, wildcardSub, false)
@@ -831,7 +882,7 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 	t.Run("Delta", func(t *testing.T) {
 		t.Run("empty first call", func(t *testing.T) {
 			l, wildcardSub, fooSub := newMockLocator(t)
-			m := internal.NewDeltaSubscriptionManager(testutils.Context(t), l, typeURL, h)
+			m := internal.NewDeltaSubscriptionManager(testutils.Context(t), l, typeURL, h, nil)
 
 			// The first call, if empty should always implicit create a wildcard subscription.
 			m.ProcessSubscriptions(newDeltaReq(nil, nil))
@@ -856,7 +907,7 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 		})
 		t.Run("non-empty first call", func(t *testing.T) {
 			l, wildcardSub, fooSub := newMockLocator(t)
-			m := internal.NewDeltaSubscriptionManager(testutils.Context(t), l, typeURL, h)
+			m := internal.NewDeltaSubscriptionManager(testutils.Context(t), l, typeURL, h, nil)
 
 			// If the first call isn't empty, the implicit wildcard subscription should not be present.
 			m.ProcessSubscriptions(newDeltaReq([]string{foo}, nil))
@@ -865,7 +916,7 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 		})
 		t.Run("explicit wildcard", func(t *testing.T) {
 			l, wildcardSub, fooSub := newMockLocator(t)
-			m := internal.NewDeltaSubscriptionManager(testutils.Context(t), l, typeURL, h)
+			m := internal.NewDeltaSubscriptionManager(testutils.Context(t), l, typeURL, h, nil)
 
 			m.ProcessSubscriptions(newDeltaReq([]string{ads.WildcardSubscription}, nil))
 			requireSelect(t, wildcardSub, false)
@@ -941,7 +992,7 @@ func TestSubscriptionManagerUnsubscribeAll(t *testing.T) {
 			}
 		})
 
-		m := internal.NewDeltaSubscriptionManager(context.Background(), l, typeURL, h)
+		m := internal.NewDeltaSubscriptionManager(context.Background(), l, typeURL, h, nil)
 
 		wg.Add(2)
 		m.ProcessSubscriptions(&ads.DeltaDiscoveryRequest{
@@ -963,7 +1014,7 @@ func TestSubscriptionManagerUnsubscribeAll(t *testing.T) {
 				wg.Done()
 			}
 		})
-		m := internal.NewDeltaSubscriptionManager(ctx, l, typeURL, h)
+		m := internal.NewDeltaSubscriptionManager(ctx, l, typeURL, h, nil)
 
 		wg.Add(1)
 		m.ProcessSubscriptions(&ads.DeltaDiscoveryRequest{
@@ -976,4 +1027,59 @@ func TestSubscriptionManagerUnsubscribeAll(t *testing.T) {
 		wg.Wait()
 	})
 
+}
+
+func TestSendBufferSizeEstimator(t *testing.T) {
+	typeURL := TypeOf[*ads.Secret]().URL()
+	h := NewNoopBatchSubscriptionHandler(t)
+	estimator := new(mockSizeEstimator)
+	l := mockResourceLocator(func(_, resourceName string, _ ads.RawSubscriptionHandler) func() {
+		return func() {}
+	})
+
+	// Simply check that the manager does not panic if the estimator is nil
+	t.Run("handles nil estimator", func(t *testing.T) {
+		m := internal.NewDeltaSubscriptionManager(context.Background(), l, typeURL, h, nil)
+
+		m.ProcessSubscriptions(&ads.DeltaDiscoveryRequest{
+			ResourceNamesSubscribe: []string{ads.WildcardSubscription},
+		})
+	})
+
+	const foo = "foo"
+
+	// check that the estimator is called with cleaned subscriptions
+	t.Run("clean subs", func(t *testing.T) {
+
+		called := make(chan struct{})
+		estimator.Set(func(actualTypeURL string, resourceNamesSubscribe []string) int {
+			require.Equal(t, typeURL, actualTypeURL)
+			require.Equal(t, []string{ads.WildcardSubscription, foo}, resourceNamesSubscribe)
+			close(called)
+			return 0
+		})
+		m := internal.NewDeltaSubscriptionManager(context.Background(), l, typeURL, h, estimator)
+
+		m.ProcessSubscriptions(&ads.DeltaDiscoveryRequest{
+			ResourceNamesSubscribe: []string{foo, ads.WildcardSubscription, ads.WildcardSubscription, foo},
+		})
+		select {
+		case <-called:
+		default:
+			t.Fatalf("estimator not called")
+		}
+	})
+
+	t.Run("estimator not called if IRV provided", func(t *testing.T) {
+		estimator.Set(func(string, []string) int {
+			t.Fatalf("estimator should not be called")
+			return 0
+		})
+
+		m := internal.NewDeltaSubscriptionManager(context.Background(), l, typeURL, h, estimator)
+		m.ProcessSubscriptions(&ads.DeltaDiscoveryRequest{
+			ResourceNamesSubscribe:  []string{ads.WildcardSubscription},
+			InitialResourceVersions: map[string]string{foo: "0"},
+		})
+	})
 }

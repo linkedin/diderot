@@ -319,6 +319,7 @@ type streamHandler[REQ adsDiscoveryRequest, RES proto.Message] struct {
 		locator internal.ResourceLocator,
 		typeURL string,
 		handler internal.BatchSubscriptionHandler,
+		sizeEstimator internal.SendBufferSizeEstimator,
 	) internal.SubscriptionManager[REQ]
 	setControlPlane        func(res RES, controlPlane *corev3.ControlPlane)
 	aggregateSubscriptions map[string]internal.SubscriptionManager[REQ]
@@ -373,6 +374,7 @@ func (h *streamHandler[REQ, RES]) getSubscriptionManager(typeURL string) interna
 			typeURL,
 			h.send,
 		),
+		h.server.sendBufferSizeEstimator,
 	)
 
 	h.aggregateSubscriptions[typeURL] = manager

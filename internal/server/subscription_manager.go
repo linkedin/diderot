@@ -54,12 +54,14 @@ func newSubscriptionManagerCore(
 	locator ResourceLocator,
 	typeURL string,
 	handler BatchSubscriptionHandler,
+	sizeEstimator SendBufferSizeEstimator,
 ) *subscriptionManagerCore {
 	c := &subscriptionManagerCore{
 		ctx:           ctx,
 		locator:       locator,
 		typeURL:       typeURL,
 		handler:       handler,
+		sizeEstimator: sizeEstimator,
 		subscriptions: make(map[string]func()),
 	}
 	// Ensure all the subscriptions managed by this subscription manager are cleaned up, otherwise they
@@ -83,9 +85,10 @@ func NewDeltaSubscriptionManager(
 	locator ResourceLocator,
 	typeURL string,
 	handler BatchSubscriptionHandler,
+	sizeEstimator SendBufferSizeEstimator,
 ) SubscriptionManager[*ads.DeltaDiscoveryRequest] {
 	return &deltaSubscriptionManager{
-		subscriptionManagerCore: newSubscriptionManagerCore(ctx, locator, typeURL, handler),
+		subscriptionManagerCore: newSubscriptionManagerCore(ctx, locator, typeURL, handler, sizeEstimator),
 	}
 }
 
@@ -101,9 +104,10 @@ func NewSotWSubscriptionManager(
 	locator ResourceLocator,
 	typeURL string,
 	handler BatchSubscriptionHandler,
+	sizeEstimator SendBufferSizeEstimator,
 ) SubscriptionManager[*ads.SotWDiscoveryRequest] {
 	return &sotWSubscriptionManager{
-		subscriptionManagerCore: newSubscriptionManagerCore(ctx, locator, typeURL, handler),
+		subscriptionManagerCore: newSubscriptionManagerCore(ctx, locator, typeURL, handler, sizeEstimator),
 	}
 }
 
@@ -223,7 +227,7 @@ func (c *subscriptionManagerCore) cleanSubscriptionsAndEstimateSize(
 	cleaned = slices.Clone(resourceNamesSubscribe)
 	slices.Sort(cleaned)
 	cleaned = slices.Compact(cleaned)
-	if len(initialResourceVersions) > 0 && c.sizeEstimator != nil {
+	if len(initialResourceVersions) == 0 && c.sizeEstimator != nil {
 		size = c.sizeEstimator.EstimateSubscriptionSize(c.typeURL, cleaned)
 	}
 	return cleaned, size

@@ -547,6 +547,8 @@ func TestEndToEnd(t *testing.T) {
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource).Resource, res.Resources[0])
 	})
 
+	// This checks that the size estimator, if provided, is correctly wired in to the subscription
+	// handler.
 	t.Run("size estimator integration", func(t *testing.T) {
 		const foo = "foo"
 

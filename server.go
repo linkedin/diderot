@@ -158,7 +158,7 @@ func WithControlPlane(controlPlane *corev3.ControlPlane) ADSServerOption {
 type SendBufferSizeEstimator interface {
 	// EstimateSubscriptionSize returns the expected number of resources that will be sent back as a
 	// result of the given resource names.
-	EstimateSubscriptionSize(typeURL string, resourceNamesSubscribe []string) int
+	EstimateSubscriptionSize(streamCtx context.Context, typeURL string, resourceNamesSubscribe []string) int
 }
 
 // WithSendBufferSizeEstimator provides a [SendBufferSizeEstimator] that will be invoked when the

@@ -15,7 +15,7 @@ import (
 
 // SendBufferSizeEstimator is a copy of the interface in the root package, to avoid import cycles.
 type SendBufferSizeEstimator interface {
-	EstimateSubscriptionSize(typeURL string, resourceNamesSubscribe []string) int
+	EstimateSubscriptionSize(streamCtx context.Context, typeURL string, resourceNamesSubscribe []string) int
 }
 
 // BatchSubscriptionHandler is an extension of the SubscriptionHandler interface in the root package

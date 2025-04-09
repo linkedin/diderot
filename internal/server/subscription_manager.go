@@ -228,7 +228,7 @@ func (c *subscriptionManagerCore) cleanSubscriptionsAndEstimateSize(
 	slices.Sort(cleaned)
 	cleaned = slices.Compact(cleaned)
 	if len(initialResourceVersions) == 0 && c.sizeEstimator != nil {
-		size = c.sizeEstimator.EstimateSubscriptionSize(c.typeURL, cleaned)
+		size = c.sizeEstimator.EstimateSubscriptionSize(c.ctx, c.typeURL, cleaned)
 	}
 	return cleaned, size
 }

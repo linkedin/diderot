@@ -108,20 +108,26 @@ func getCache[T proto.Message](tl *testLocator) Cache[T] {
 }
 
 type mockSizeEstimator struct {
-	atomic.Pointer[func(typeURL string, resourceNamesSubscribe []string) int]
+	atomic.Pointer[func(streamCtx context.Context, typeURL string, resourceNamesSubscribe []string) int]
 }
 
-func (s *mockSizeEstimator) Set(f func(typeURL string, resourceNamesSubscribe []string) int) {
+func (s *mockSizeEstimator) Set(
+	f func(streamCtx context.Context, typeURL string, resourceNamesSubscribe []string) int,
+) {
 	s.Store(&f)
 }
 
-func (s *mockSizeEstimator) EstimateSubscriptionSize(typeURL string, resourceNamesSubscribe []string) int {
+func (s *mockSizeEstimator) EstimateSubscriptionSize(
+	streamCtx context.Context,
+	typeURL string,
+	resourceNamesSubscribe []string,
+) int {
 	f := s.Load()
 	if f == nil {
 		return 0
 	}
 
-	return (*f)(typeURL, resourceNamesSubscribe)
+	return (*f)(streamCtx, typeURL, resourceNamesSubscribe)
 }
 
 func TestEndToEnd(t *testing.T) {
@@ -563,7 +569,7 @@ func TestEndToEnd(t *testing.T) {
 
 		req.ResourceNamesSubscribe = []string{ads.WildcardSubscription, ads.WildcardSubscription}
 		called := make(chan struct{})
-		estimator.Set(func(typeURL string, resourceNamesSubscribe []string) int {
+		estimator.Set(func(streamCtx context.Context, typeURL string, resourceNamesSubscribe []string) int {
 			if typeURL == req.TypeUrl {
 				close(called)
 			}
@@ -1050,15 +1056,17 @@ func TestSendBufferSizeEstimator(t *testing.T) {
 
 	// check that the estimator is called with cleaned subscriptions
 	t.Run("clean subs", func(t *testing.T) {
-
+		key := new(byte)
+		ctx := context.WithValue(context.Background(), key, 42)
 		called := make(chan struct{})
-		estimator.Set(func(actualTypeURL string, resourceNamesSubscribe []string) int {
+		estimator.Set(func(streamCtx context.Context, actualTypeURL string, resourceNamesSubscribe []string) int {
+			require.Equal(t, ctx, streamCtx)
 			require.Equal(t, typeURL, actualTypeURL)
 			require.Equal(t, []string{ads.WildcardSubscription, foo}, resourceNamesSubscribe)
 			close(called)
 			return 0
 		})
-		m := internal.NewDeltaSubscriptionManager(context.Background(), l, typeURL, h, estimator)
+		m := internal.NewDeltaSubscriptionManager(ctx, l, typeURL, h, estimator)
 
 		m.ProcessSubscriptions(&ads.DeltaDiscoveryRequest{
 			ResourceNamesSubscribe: []string{foo, ads.WildcardSubscription, ads.WildcardSubscription, foo},
@@ -1071,7 +1079,7 @@ func TestSendBufferSizeEstimator(t *testing.T) {
 	})
 
 	t.Run("estimator not called if IRV provided", func(t *testing.T) {
-		estimator.Set(func(string, []string) int {
+		estimator.Set(func(context.Context, string, []string) int {
 			t.Fatalf("estimator should not be called")
 			return 0
 		})

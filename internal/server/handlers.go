@@ -335,13 +335,6 @@ func (h *handler) handleDeletionsFromIRV() {
 		if _, ok := h.entries[name]; !ok && !irv.received {
 			slog.Debug("Resource no longer exists on the server but is still present on the client."+
 				"Explicitly marking the resource for deletion.", "resourceName", name)
-			if h.statsHandler != nil {
-				h.statsHandler.HandleServerEvent(h.ctx, &serverstats.IRVMatchedResource{
-					ResourceName: name,
-					Resource:     h.entries[name],
-					IsDeleted:    true,
-				})
-			}
 			h.entries[name] = nil
 		}
 	}
@@ -358,10 +351,8 @@ func (h *handler) handleMatchFromIRV(name string, r *ads.RawResource) bool {
 				h.statsHandler.HandleServerEvent(h.ctx, &serverstats.IRVMatchedResource{
 					ResourceName: name,
 					Resource:     r,
-					IsDeleted:    false,
 				})
 			}
-
 			return true
 		}
 	}

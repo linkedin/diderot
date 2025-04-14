@@ -102,8 +102,6 @@ type IRVMatchedResource struct {
 	ResourceName string
 	// The resource itself, nil if the resource is being deleted.
 	Resource *ads.RawResource
-	// IsDeleted indicates whether the resource has been deleted on server while it present on the client.
-	IsDeleted bool
 }
 
 func (s *IRVMatchedResource) isServerEvent() {}

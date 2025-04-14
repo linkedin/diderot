@@ -96,7 +96,8 @@ type ResourceQueued struct {
 
 func (s *ResourceQueued) isServerEvent() {}
 
-// IRVMatchedResource contains the stats for resources which has the same version as the one present in client.
+// IRVMatchedResource represents stats for resources that are not sent by the server
+// because their version matches the `initial_resource_versions` provided in the client request.
 type IRVMatchedResource struct {
 	// The name of the resource
 	ResourceName string

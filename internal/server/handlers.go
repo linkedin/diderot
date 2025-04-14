@@ -333,7 +333,7 @@ func (h *handler) EndNotificationBatch() {
 func (h *handler) handleDeletionsFromIRV() {
 	for name, irv := range h.initialResourceVersions {
 		if _, ok := h.entries[name]; !ok && !irv.received {
-			slog.Debug("Resource no longer exists on the server but is still present on the client."+
+			slog.Debug("Resource no longer exists on the server but is still present on the client. "+
 				"Explicitly marking the resource for deletion.", "resourceName", name)
 			h.entries[name] = nil
 		}
@@ -344,7 +344,11 @@ func (h *handler) handleDeletionsFromIRV() {
 func (h *handler) handleMatchFromIRV(name string, r *ads.RawResource) bool {
 	if res, ok := h.initialResourceVersions[name]; ok {
 		if r != nil && res.version == r.Version {
-			slog.Debug("resource version matches with IRV from client, skipping this resource", "resourceName", name, "version", res.version)
+			slog.Debug(
+				"Resource version matches with IRV from client, skipping this resource",
+				"resourceName", name,
+				"version", res.version,
+			)
 			res.received = true
 
 			if h.statsHandler != nil {

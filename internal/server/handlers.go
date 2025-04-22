@@ -34,10 +34,11 @@ type BatchSubscriptionHandler interface {
 
 // sendBuffer is an alias for the map type used by the handler to accumulate pending resource updates
 // before sending them to the client.
-type sendBuffer map[string]*ads.RawResource
+type sendBuffer map[string]serverstats.QueuedResource
 
 func newHandler(
 	ctx context.Context,
+	typeURL string,
 	granularLimiter handlerLimiter,
 	globalLimiter handlerLimiter,
 	statsHandler serverstats.Handler,
@@ -45,6 +46,7 @@ func newHandler(
 	send func(entries sendBuffer) error,
 ) *handler {
 	h := &handler{
+		typeURL:                       typeURL,
 		granularLimiter:               granularLimiter,
 		globalLimiter:                 globalLimiter,
 		statsHandler:                  statsHandler,
@@ -95,6 +97,7 @@ var sendBufferPool = sync.Pool{New: func() any { return make(sendBuffer) }}
 // handler implements the BatchSubscriptionHandler interface using a backing map to aggregate updates
 // as they come in, and flushing them out, according to when the limiter permits it.
 type handler struct {
+	typeURL         string
 	granularLimiter handlerLimiter
 	globalLimiter   handlerLimiter
 	statsHandler    serverstats.Handler
@@ -169,6 +172,9 @@ func (h *handler) loop() {
 
 		entries := h.swapEntries()
 
+		if h.statsHandler != nil {
+			h.statsHandler.HandleServerEvent(h.ctx, &serverstats.ResourcesQueued{Resources: entries})
+		}
 		err := h.send(entries)
 
 		// Return the used map to the pool after clearing it.
@@ -234,12 +240,10 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	if h.statsHandler != nil {
-		h.statsHandler.HandleServerEvent(h.ctx, &serverstats.ResourceQueued{
-			ResourceName:   name,
-			Resource:       r,
-			Metadata:       metadata,
-			ResourceExists: !metadata.CachedAt.IsZero(),
+	if metadata.CachedAt.IsZero() && h.statsHandler != nil {
+		h.statsHandler.HandleServerEvent(h.ctx, &serverstats.UnknownResourceRequested{
+			TypeURL:      h.typeURL,
+			ResourceName: name,
 		})
 	}
 
@@ -255,7 +259,10 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 		return
 	}
 
-	h.entries[name] = r
+	h.entries[name] = serverstats.QueuedResource{
+		Resource: r,
+		Metadata: metadata,
+	}
 
 	if r != nil && metadata.GlobCollectionURL != "" {
 		// When a glob collection is empty, it is signaled to the client with a corresponding deletion of
@@ -335,7 +342,7 @@ func (h *handler) handleDeletionsFromIRV() {
 		if _, ok := h.entries[name]; !ok && !irv.received {
 			slog.Debug("Resource no longer exists on the server but is still present on the client. "+
 				"Explicitly marking the resource for deletion.", "resourceName", name)
-			h.entries[name] = nil
+			h.entries[name] = serverstats.QueuedResource{}
 		}
 	}
 }
@@ -386,25 +393,25 @@ func newSotWHandler(
 	granularLimiter handlerLimiter,
 	globalLimiter handlerLimiter,
 	statsHandler serverstats.Handler,
-	typeUrl string,
+	typeURL string,
 	send func(res *ads.SotWDiscoveryResponse) error,
 ) *handler {
-	isPseudoDeltaSotW := utils.IsPseudoDeltaSotW(typeUrl)
+	isPseudoDeltaSotW := utils.IsPseudoDeltaSotW(typeURL)
 	var looper func(resources sendBuffer) error
 	if isPseudoDeltaSotW {
 		looper = func(entries sendBuffer) error {
 			versions := map[string]string{}
 
 			for name, e := range entries {
-				versions[name] = e.Version
+				versions[name] = e.Resource.Version
 			}
 
 			res := &ads.SotWDiscoveryResponse{
-				TypeUrl: typeUrl,
+				TypeUrl: typeURL,
 				Nonce:   utils.NewNonce(0),
 			}
 			for _, e := range entries {
-				res.Resources = append(res.Resources, e.Resource)
+				res.Resources = append(res.Resources, e.Resource.Resource)
 			}
 			res.VersionInfo = utils.MapToProto(versions)
 			return send(res)
@@ -415,9 +422,9 @@ func newSotWHandler(
 
 		looper = func(resources sendBuffer) error {
 			for name, r := range resources {
-				if r != nil {
+				if r.Resource != nil {
 					allResources[name] = r
-					versions[name] = r.Version
+					versions[name] = r.Resource.Version
 				} else {
 					delete(allResources, name)
 					delete(versions, name)
@@ -425,11 +432,11 @@ func newSotWHandler(
 			}
 
 			res := &ads.SotWDiscoveryResponse{
-				TypeUrl: typeUrl,
+				TypeUrl: typeURL,
 				Nonce:   utils.NewNonce(0),
 			}
 			for _, r := range allResources {
-				res.Resources = append(res.Resources, r.Resource)
+				res.Resources = append(res.Resources, r.Resource.Resource)
 			}
 			res.VersionInfo = utils.MapToProto(versions)
 			return send(res)
@@ -438,6 +445,7 @@ func newSotWHandler(
 
 	return newHandler(
 		ctx,
+		typeURL,
 		granularLimiter,
 		globalLimiter,
 		statsHandler,

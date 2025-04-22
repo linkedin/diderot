@@ -80,21 +80,23 @@ type ResourceOverMaxSize struct {
 
 func (s *ResourceOverMaxSize) isServerEvent() {}
 
-// ResourceQueued contains the stats for a resource entering the send queue.
-type ResourceQueued struct {
-	// The name of the resource
-	ResourceName string
+// QueuedResource contains all the metadata about a resource about to be sent by the server. Will be
+// the 0-value for any resource that was provided via the initial_resource_versions field which was
+// not explicitly subscribed to and did not exist.
+type QueuedResource struct {
 	// The resource itself, nil if the resource is being deleted.
 	Resource *ads.RawResource
 	// The metadata for the resource and subscription.
 	Metadata ads.SubscriptionMetadata
-	// Indicates whether the resource existed at all and is being deleted, or whether the client
-	// subscribed to a resource that never existed. This should be rare, and can be indicative of a
-	// client-side bug.
-	ResourceExists bool
 }
 
-func (s *ResourceQueued) isServerEvent() {}
+// ResourcesQueued contains the stats for resources about to be sent.
+type ResourcesQueued struct {
+	// Iterates over all the resources about to be sent.
+	Resources map[string]QueuedResource
+}
+
+func (s *ResourcesQueued) isServerEvent() {}
 
 // IRVMatchedResource represents stats for resources that are not sent by the server
 // because their version matches the `initial_resource_versions` provided in the client request.
@@ -106,3 +108,14 @@ type IRVMatchedResource struct {
 }
 
 func (s *IRVMatchedResource) isServerEvent() {}
+
+// UnknownResourceRequested indicates whether a resource that was subscribed never existed. This
+// should be rare, and can be indicative of a client-side bug.
+type UnknownResourceRequested struct {
+	// The resource's type.
+	TypeURL string
+	// The resource's name.
+	ResourceName string
+}
+
+func (s *UnknownResourceRequested) isServerEvent() {}

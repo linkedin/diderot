@@ -48,10 +48,8 @@ func (m *serverStatsHandler) HandleServerEvent(ctx context.Context, event server
 		if e.IsACK {
 			m.ACKsReceived.Add(1)
 		}
-	case *serverstats.ResourceQueued:
-		if !e.ResourceExists {
-			m.UnknownResources.Add(1)
-		}
+	case *serverstats.UnknownResourceRequested:
+		m.UnknownResources.Add(1)
 	}
 }
 

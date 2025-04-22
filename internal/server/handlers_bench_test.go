@@ -30,7 +30,7 @@ func benchmarkHandlers(tb testing.TB, count, subscriptions int) {
 		false,
 		func(resources sendBuffer) error {
 			for _, r := range resources {
-				if r.Version == finalVersion {
+				if r.Resource.Version == finalVersion {
 					finished.Done()
 				}
 			}

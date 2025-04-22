@@ -53,6 +53,7 @@ func newDeltaHandler(
 
 	return newHandler(
 		ctx,
+		typeURL,
 		granularLimiter,
 		globalLimiter,
 		statsHandler,
@@ -117,7 +118,7 @@ func newQueue(size int) *[]queuedResourceUpdate {
 	return queue
 }
 
-func (ds *deltaSender) chunk(resourceUpdates map[string]*ads.RawResource) (chunks []*ads.DeltaDiscoveryResponse) {
+func (ds *deltaSender) chunk(resourceUpdates sendBuffer) (chunks []*ads.DeltaDiscoveryResponse) {
 	queuePtr := newQueue(len(resourceUpdates))
 	defer queuedUpdatesPool.Put(queuePtr)
 
@@ -125,7 +126,7 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]*ads.RawResource) (chunk
 	for name, e := range resourceUpdates {
 		queue = append(queue, queuedResourceUpdate{
 			Name: name,
-			Size: encodedUpdateSize(name, e),
+			Size: encodedUpdateSize(name, e.Resource),
 		})
 	}
 	// Sort the updates in descending order
@@ -153,7 +154,7 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]*ads.RawResource) (chunk
 					// accordingly.
 					if ds.statsHandler != nil {
 						ds.statsHandler.HandleServerEvent(ds.ctx, &serverstats.ResourceOverMaxSize{
-							Resource:        r,
+							Resource:        r.Resource,
 							ResourceSize:    update.Size,
 							MaxResourceSize: ds.maxChunkSize,
 						})
@@ -175,8 +176,8 @@ func (ds *deltaSender) chunk(resourceUpdates map[string]*ads.RawResource) (chunk
 				}
 			}
 
-			if r != nil {
-				chunk.Resources = append(chunk.Resources, r)
+			if r.Resource != nil {
+				chunk.Resources = append(chunk.Resources, r.Resource)
 			} else {
 				chunk.RemovedResources = append(chunk.RemovedResources, update.Name)
 			}

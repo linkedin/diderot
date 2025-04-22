@@ -207,13 +207,13 @@ type RawSubscriptionHandler interface {
 // SubscriptionMetadata contains metadata about the subscription that triggered the Notify call on
 // the [RawSubscriptionHandler] or [SubscriptionHandler].
 type SubscriptionMetadata struct {
-	// The time at which the resource was subscribed to
+	// The time at which the resource was subscribed to.
 	SubscribedAt time.Time
-	// The time at which the resource was modified (can be UnknownModifiedTime if the modification time is unknown)
+	// The time at which the resource was modified (can be the 0-value if the modification time is unknown).
 	ModifiedAt time.Time
 	// The time at which the update to the resource was received by the cache (i.e. when [Cache.Set] was
 	// called, not strictly when the server actually received the update). If this is metadata is for a
-	// subscription to a resource that does not yet exist, will be UnknownModifiedTime.
+	// subscription to a resource that does not yet exist, will be the 0-value.
 	CachedAt time.Time
 	// The current priority index of the value. Will be 0 unless the backing cache was created with
 	// [NewPrioritizedCache], [NewPrioritizedAggregateCache] or

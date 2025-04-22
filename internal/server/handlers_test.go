@@ -10,6 +10,7 @@ import (
 
 	"github.com/linkedin/diderot/ads"
 	"github.com/linkedin/diderot/internal/utils"
+	serverstats "github.com/linkedin/diderot/stats/server"
 	"github.com/linkedin/diderot/testutils"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -87,7 +88,11 @@ func TestHandlerDebounce(t *testing.T) {
 	l.Release()
 	require.Equal(t,
 		sendBuffer{
-			foo: nil,
+			foo: serverstats.QueuedResource{
+				Resource:       nil,
+				Metadata:       fooDeleteMetadata,
+				ResourceExists: true,
+			},
 		},
 		actualResources)
 	delete(actualResources, foo)
@@ -98,7 +103,11 @@ func TestHandlerDebounce(t *testing.T) {
 	require.Equal(
 		t,
 		sendBuffer{
-			bar: barR,
+			bar: serverstats.QueuedResource{
+				Resource:       barR,
+				Metadata:       barCreateMetadata,
+				ResourceExists: true,
+			},
 		},
 		actualResources,
 	)
@@ -127,7 +136,7 @@ func TestHandlerBatching(t *testing.T) {
 	notify := func() {
 		name := strconv.Itoa(len(expectedEntries))
 		h.Notify(name, nil, ads.SubscriptionMetadata{})
-		expectedEntries[name] = nil
+		expectedEntries[name] = serverstats.QueuedResource{Resource: nil}
 	}
 
 	h.StartNotificationBatch(nil, 0)
@@ -251,7 +260,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, sendBuffer{barResource.Name: barResource}, <-ch)
+		require.Equal(t, sendBuffer{barResource.Name: serverstats.QueuedResource{Resource: barResource}}, <-ch)
 	})
 
 	t.Run("partial update, foo deleted and bar updated", func(t *testing.T) {
@@ -262,8 +271,8 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		released.Store(true)
 		handler.EndNotificationBatch()
 		require.Equal(t, sendBuffer{
-			barResource.Name: barResource,
-			foo:              nil,
+			barResource.Name: serverstats.QueuedResource{Resource: barResource},
+			foo:              serverstats.QueuedResource{Resource: nil},
 		}, <-ch)
 	})
 
@@ -275,8 +284,8 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		released.Store(true)
 		handler.EndNotificationBatch()
 		require.Equal(t, sendBuffer{
-			barResource.Name: barResource,
-			foo:              nil,
+			barResource.Name: serverstats.QueuedResource{Resource: barResource},
+			foo:              serverstats.QueuedResource{Resource: nil},
 		}, <-ch)
 	})
 }

@@ -17,6 +17,8 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+const AnyTypeURL = "type.googleapis.com/google.protobuf.Any"
+
 // TestHandlerDebounce checks the following:
 //  1. That the handler does not invoke send as long as the debouncer has not allowed it to.
 //  2. That updates that come in while send is being invoked do not get missed.
@@ -32,6 +34,7 @@ func TestHandlerDebounce(t *testing.T) {
 
 	h := newHandler(
 		testutils.Context(t),
+		AnyTypeURL,
 		NoopLimiter{},
 		l,
 		new(customStatsHandler),
@@ -89,9 +92,8 @@ func TestHandlerDebounce(t *testing.T) {
 	require.Equal(t,
 		sendBuffer{
 			foo: serverstats.QueuedResource{
-				Resource:       nil,
-				Metadata:       fooDeleteMetadata,
-				ResourceExists: true,
+				Resource: nil,
+				Metadata: fooDeleteMetadata,
 			},
 		},
 		actualResources)
@@ -104,9 +106,8 @@ func TestHandlerDebounce(t *testing.T) {
 		t,
 		sendBuffer{
 			bar: serverstats.QueuedResource{
-				Resource:       barR,
-				Metadata:       barCreateMetadata,
-				ResourceExists: true,
+				Resource: barR,
+				Metadata: barCreateMetadata,
 			},
 		},
 		actualResources,
@@ -119,6 +120,7 @@ func TestHandlerBatching(t *testing.T) {
 	granular := NewTestHandlerLimiter()
 	h := newHandler(
 		testutils.Context(t),
+		AnyTypeURL,
 		granular,
 		NoopLimiter{},
 		new(customStatsHandler),
@@ -166,6 +168,7 @@ func TestHandlerBatching(t *testing.T) {
 func TestHandlerDoesNothingOnEmptyBatch(t *testing.T) {
 	h := newHandler(
 		testutils.Context(t),
+		AnyTypeURL,
 		// Make both limiters nil, if the handler interacts with them at all the test should fail
 		nil,
 		nil,
@@ -238,6 +241,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 	ch := make(chan sendBuffer)
 	handler := newHandler(
 		testutils.Context(t),
+		AnyTypeURL,
 		NoopLimiter{},
 		NoopLimiter{},
 		new(customStatsHandler),

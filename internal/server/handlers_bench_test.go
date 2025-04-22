@@ -24,6 +24,7 @@ func benchmarkHandlers(tb testing.TB, count, subscriptions int) {
 	const finalVersion = "done"
 	h := newHandler(
 		ctx,
+		AnyTypeURL,
 		NoopLimiter{},
 		NoopLimiter{},
 		new(customStatsHandler),

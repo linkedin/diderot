@@ -335,6 +335,10 @@ func (h *handler) handleDeletionsFromIRV() {
 		if _, ok := h.entries[name]; !ok && !irv.received {
 			slog.Debug("Resource no longer exists on the server but is still present on the client. "+
 				"Explicitly marking the resource for deletion.", "resourceName", name)
+
+			if h.entries == nil {
+				h.entries = sendBufferPool.Get().(sendBuffer)
+			}
 			h.entries[name] = nil
 		}
 	}

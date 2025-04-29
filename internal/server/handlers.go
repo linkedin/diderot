@@ -34,7 +34,7 @@ type BatchSubscriptionHandler interface {
 
 // sendBuffer is an alias for the map type used by the handler to accumulate pending resource updates
 // before sending them to the client.
-type sendBuffer map[string]serverstats.QueuedResource
+type sendBuffer map[string]serverstats.SentResource
 
 func newHandler(
 	ctx context.Context,
@@ -172,10 +172,20 @@ func (h *handler) loop() {
 
 		entries := h.swapEntries()
 
+		var start time.Time
 		if h.statsHandler != nil {
-			h.statsHandler.HandleServerEvent(h.ctx, &serverstats.ResourcesQueued{Resources: entries})
+			start = time.Now()
 		}
+
 		err := h.send(entries)
+
+		if h.statsHandler != nil {
+			h.statsHandler.HandleServerEvent(h.ctx, &serverstats.ResponseSent{
+				TypeURL:   h.typeURL,
+				Resources: entries,
+				Duration:  time.Since(start),
+			})
+		}
 
 		// Return the used map to the pool after clearing it.
 		clear(entries)
@@ -259,9 +269,10 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 		return
 	}
 
-	h.entries[name] = serverstats.QueuedResource{
+	h.entries[name] = serverstats.SentResource{
 		Resource: r,
 		Metadata: metadata,
+		QueuedAt: time.Now(),
 	}
 
 	if r != nil && metadata.GlobCollectionURL != "" {
@@ -342,7 +353,7 @@ func (h *handler) handleDeletionsFromIRV() {
 		if _, ok := h.entries[name]; !ok && !irv.received {
 			slog.Debug("Resource no longer exists on the server but is still present on the client. "+
 				"Explicitly marking the resource for deletion.", "resourceName", name)
-			h.entries[name] = serverstats.QueuedResource{}
+			h.entries[name] = serverstats.SentResource{}
 		}
 	}
 }

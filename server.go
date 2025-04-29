@@ -328,16 +328,6 @@ type streamHandler[REQ adsDiscoveryRequest, RES proto.Message] struct {
 // send invokes Send on the stream with the given response, returning an error if Send returns an error. Crucially,
 // Send can only be invoked by one goroutine at a time, so this function protects the invocation of Send with sendLock.
 func (h *streamHandler[REQ, RES]) send(res RES) (err error) {
-	if h.server.statsHandler != nil {
-		start := time.Now()
-		defer func() {
-			h.server.statsHandler.HandleServerEvent(h.streamCtx, &serverstats.ResponseSent{
-				Res:      res,
-				Duration: time.Since(start),
-			})
-		}()
-	}
-
 	h.sendLock.Lock()
 	defer h.sendLock.Unlock()
 	h.setControlPlane(res, h.server.controlPlane)

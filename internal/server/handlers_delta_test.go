@@ -136,8 +136,8 @@ func TestDeltaHandlerChunking(t *testing.T) {
 	}
 
 	sentResponses := getSentResponses(sendBuffer{
-		foo.Name: serverstats.QueuedResource{Resource: foo},
-		bar.Name: serverstats.QueuedResource{Resource: bar},
+		foo.Name: serverstats.SentResource{Resource: foo},
+		bar.Name: serverstats.SentResource{Resource: bar},
 	}, 2)
 	require.Equal(t, len(sentResponses[0].Resources), 1)
 	require.Equal(t, len(sentResponses[1].Resources), 1)
@@ -156,8 +156,8 @@ func TestDeltaHandlerChunking(t *testing.T) {
 	name1 := strings.Repeat("1", resourceSize)
 	name2 := strings.Repeat("2", resourceSize)
 	sentResponses = getSentResponses(sendBuffer{
-		name1: serverstats.QueuedResource{Resource: nil},
-		name2: serverstats.QueuedResource{Resource: nil},
+		name1: serverstats.SentResource{Resource: nil},
+		name2: serverstats.SentResource{Resource: nil},
 	}, 2)
 	require.Equal(t, len(sentResponses[0].RemovedResources), 1)
 	require.Equal(t, len(sentResponses[1].RemovedResources), 1)
@@ -170,10 +170,10 @@ func TestDeltaHandlerChunking(t *testing.T) {
 	wayTooBig := strings.Repeat("3", 10*resourceSize)
 
 	sentResponses = getSentResponses(sendBuffer{
-		small1:    serverstats.QueuedResource{Resource: nil},
-		small2:    serverstats.QueuedResource{Resource: nil},
-		small3:    serverstats.QueuedResource{Resource: nil},
-		wayTooBig: serverstats.QueuedResource{Resource: nil},
+		small1:    serverstats.SentResource{Resource: nil},
+		small2:    serverstats.SentResource{Resource: nil},
+		small3:    serverstats.SentResource{Resource: nil},
+		wayTooBig: serverstats.SentResource{Resource: nil},
 	}, 1)
 	require.Equal(t, len(sentResponses[0].RemovedResources), 3)
 	require.ElementsMatch(t, []string{small1, small2, small3}, sentResponses[0].RemovedResources)

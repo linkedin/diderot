@@ -8,16 +8,26 @@ import (
 	"testing"
 	"time"
 
+	gocmp "github.com/google/go-cmp/cmp"
+	gocmpopts "github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/linkedin/diderot/ads"
 	"github.com/linkedin/diderot/internal/utils"
 	serverstats "github.com/linkedin/diderot/stats/server"
 	"github.com/linkedin/diderot/testutils"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 const AnyTypeURL = "type.googleapis.com/google.protobuf.Any"
+
+func checkSendBuffer(t *testing.T, expected, actual sendBuffer) {
+	opts := []gocmp.Option{gocmpopts.IgnoreFields(serverstats.SentResource{}, "QueuedAt"), protocmp.Transform()}
+	if !gocmp.Equal(expected, actual, opts...) {
+		require.Equal(t, expected, actual)
+	}
+}
 
 // TestHandlerDebounce checks the following:
 //  1. That the handler does not invoke send as long as the debouncer has not allowed it to.
@@ -89,29 +99,23 @@ func TestHandlerDebounce(t *testing.T) {
 
 	released.Store(true)
 	l.Release()
-	require.Equal(t,
-		sendBuffer{
-			foo: serverstats.QueuedResource{
-				Resource: nil,
-				Metadata: fooDeleteMetadata,
-			},
+	checkSendBuffer(t, sendBuffer{
+		foo: serverstats.SentResource{
+			Resource: nil,
+			Metadata: fooDeleteMetadata,
 		},
-		actualResources)
+	}, actualResources)
 	delete(actualResources, foo)
 
 	enterSendWg.Add(1)
 	released.Store(true)
 	l.Release()
-	require.Equal(
-		t,
-		sendBuffer{
-			bar: serverstats.QueuedResource{
-				Resource: barR,
-				Metadata: barCreateMetadata,
-			},
+	checkSendBuffer(t, sendBuffer{
+		bar: serverstats.SentResource{
+			Resource: barR,
+			Metadata: barCreateMetadata,
 		},
-		actualResources,
-	)
+	}, actualResources)
 }
 
 func TestHandlerBatching(t *testing.T) {
@@ -138,7 +142,7 @@ func TestHandlerBatching(t *testing.T) {
 	notify := func() {
 		name := strconv.Itoa(len(expectedEntries))
 		h.Notify(name, nil, ads.SubscriptionMetadata{})
-		expectedEntries[name] = serverstats.QueuedResource{Resource: nil}
+		expectedEntries[name] = serverstats.SentResource{Resource: nil}
 	}
 
 	h.StartNotificationBatch(nil, 0)
@@ -150,7 +154,7 @@ func TestHandlerBatching(t *testing.T) {
 	released.Store(true)
 	h.EndNotificationBatch()
 
-	require.Equal(t, expectedEntries, <-ch)
+	checkSendBuffer(t, expectedEntries, <-ch)
 
 	released.Store(false)
 
@@ -162,7 +166,7 @@ func TestHandlerBatching(t *testing.T) {
 	// Check that EndNotificationBatch skips the granular limiter
 	h.EndNotificationBatch()
 
-	require.Equal(t, expectedEntries, <-ch)
+	checkSendBuffer(t, expectedEntries, <-ch)
 }
 
 func TestHandlerDoesNothingOnEmptyBatch(t *testing.T) {
@@ -264,7 +268,9 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, sendBuffer{barResource.Name: serverstats.QueuedResource{Resource: barResource}}, <-ch)
+		checkSendBuffer(t, sendBuffer{
+			barResource.Name: serverstats.SentResource{Resource: barResource},
+		}, <-ch)
 	})
 
 	t.Run("partial update, foo deleted and bar updated", func(t *testing.T) {
@@ -274,9 +280,9 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, sendBuffer{
-			barResource.Name: serverstats.QueuedResource{Resource: barResource},
-			foo:              serverstats.QueuedResource{Resource: nil},
+		checkSendBuffer(t, sendBuffer{
+			barResource.Name: serverstats.SentResource{Resource: barResource},
+			foo:              serverstats.SentResource{Resource: nil},
 		}, <-ch)
 	})
 
@@ -287,9 +293,9 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, sendBuffer{
-			barResource.Name: serverstats.QueuedResource{Resource: barResource},
-			foo:              serverstats.QueuedResource{Resource: nil},
+		checkSendBuffer(t, sendBuffer{
+			barResource.Name: serverstats.SentResource{Resource: barResource},
+			foo:              serverstats.SentResource{Resource: nil},
 		}, <-ch)
 	})
 }

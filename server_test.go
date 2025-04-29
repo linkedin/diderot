@@ -416,6 +416,20 @@ func TestEndToEnd(t *testing.T) {
 			// Wait for the goroutine to die.
 			<-ch
 		}
+
+		// validate when there is no entry in cache,
+		clearEntry(foo)
+		clearEntry(qux)
+		req.InitialResourceVersions = map[string]string{
+			foo: "0",
+		}
+		req.ResourceNamesSubscribe = []string{ads.WildcardSubscription}
+		stream, cancel = newStream(t)
+		require.NoError(t, stream.Send(req))
+		waitForResponse(t, res, stream, 10*time.Millisecond)
+		require.ElementsMatch(t, []string{foo}, res.RemovedResources)
+		require.Empty(t, res.Resources)
+		cancel()
 	})
 
 	t.Run("SotW", func(t *testing.T) {

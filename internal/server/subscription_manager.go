@@ -123,7 +123,7 @@ func (m *deltaSubscriptionManager) ProcessSubscriptions(req *ads.DeltaDiscoveryR
 		req.ResourceNamesSubscribe, req.InitialResourceVersions,
 	)
 
-	m.handler.StartNotificationBatch(req.InitialResourceVersions, estimatedSize)
+	m.handler.StartNotificationBatch(estimatedSize)
 	defer m.handler.EndNotificationBatch()
 
 	m.lock.Lock()
@@ -155,7 +155,7 @@ func (m *deltaSubscriptionManager) ProcessSubscriptions(req *ads.DeltaDiscoveryR
 func (m *sotWSubscriptionManager) ProcessSubscriptions(req *ads.SotWDiscoveryRequest) {
 	subscribe, estimatedSize := m.cleanSubscriptionsAndEstimateSize(req.ResourceNames, nil)
 
-	m.handler.StartNotificationBatch(nil, estimatedSize)
+	m.handler.StartNotificationBatch(estimatedSize)
 	defer m.handler.EndNotificationBatch()
 
 	m.lock.Lock()

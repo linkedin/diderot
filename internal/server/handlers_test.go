@@ -130,7 +130,7 @@ func TestHandlerBatching(t *testing.T) {
 		expectedEntries[name] = nil
 	}
 
-	h.StartNotificationBatch(nil, 0)
+	h.StartNotificationBatch( 0)
 	notify()
 
 	for i := 0; i < 100; i++ {
@@ -167,7 +167,7 @@ func TestHandlerDoesNothingOnEmptyBatch(t *testing.T) {
 			return nil
 		},
 	)
-	h.StartNotificationBatch(nil, 0)
+	h.StartNotificationBatch( 0)
 	h.EndNotificationBatch()
 }
 
@@ -244,7 +244,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 
 	t.Run("partial update, foo not updated and bar updated", func(t *testing.T) {
 		req := newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
-		handler.StartNotificationBatch(req.InitialResourceVersions, 0)
+		handler.StartNotificationBatch( 0)
 		fooResource := newRawResource(foo, "0")
 		barResource := newRawResource(bar, "1")
 		notify(foo, fooResource)
@@ -256,7 +256,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 
 	t.Run("partial update, foo deleted and bar updated", func(t *testing.T) {
 		req := newDeltaReq([]string{foo, bar}, map[string]string{foo: "0", bar: "0"})
-		handler.StartNotificationBatch(req.InitialResourceVersions, 0)
+		handler.StartNotificationBatch( 0)
 		barResource := newRawResource(bar, "1")
 		notify(bar, barResource)
 		released.Store(true)
@@ -269,7 +269,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 
 	t.Run("partial update, foo deleted and bar updated with wildcard subscription", func(t *testing.T) {
 		req := newDeltaReq([]string{ads.WildcardSubscription}, map[string]string{foo: "0", bar: "0"})
-		handler.StartNotificationBatch(req.InitialResourceVersions, 0)
+		handler.StartNotificationBatch( 0)
 		barResource := newRawResource(bar, "1")
 		notify(bar, barResource)
 		released.Store(true)

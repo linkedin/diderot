@@ -639,7 +639,7 @@ type simpleBatchHandler struct {
 	ch     atomic.Pointer[chan struct{}]
 }
 
-func (h *simpleBatchHandler) StartNotificationBatch(map[string]string, int) {
+func (h *simpleBatchHandler) StartNotificationBatch(int) {
 	ch := make(chan struct{}, 1)
 	require.True(h.t, h.ch.CompareAndSwap(nil, &ch))
 }
@@ -938,13 +938,13 @@ func TestImplicitWildcardSubscription(t *testing.T) {
 // batchFuncHandler the equivalent of funcHandler but for the BatchSubscriptionHandler interface.
 type batchFuncHandler struct {
 	t      *testing.T
-	start  func(irv map[string]string, sendBufferSize int)
+	start  func(sendBufferSize int)
 	notify func(name string, r *ads.RawResource, metadata ads.SubscriptionMetadata)
 	end    func()
 }
 
-func (b *batchFuncHandler) StartNotificationBatch(irv map[string]string, sendBufferSize int) {
-	b.start(irv, sendBufferSize)
+func (b *batchFuncHandler) StartNotificationBatch(sendBufferSize int) {
+	b.start(sendBufferSize)
 }
 
 func (b *batchFuncHandler) Notify(name string, r *ads.RawResource, metadata ads.SubscriptionMetadata) {
@@ -961,7 +961,7 @@ func (b *batchFuncHandler) EndNotificationBatch() {
 
 func NewBatchSubscriptionHandler(
 	t *testing.T,
-	start func(versions map[string]string, size int),
+	start func(size int),
 	notify func(name string, r *ads.RawResource, metadata ads.SubscriptionMetadata),
 	end func(),
 ) internal.BatchSubscriptionHandler {
@@ -976,7 +976,7 @@ func NewBatchSubscriptionHandler(
 func NewNoopBatchSubscriptionHandler(t *testing.T) internal.BatchSubscriptionHandler {
 	return NewBatchSubscriptionHandler(
 		t,
-		func(map[string]string, int) {},
+		func(int) {},
 		func(string, *ads.RawResource, ads.SubscriptionMetadata) {},
 		func() {},
 	)

@@ -429,9 +429,9 @@ func TestEndToEnd(t *testing.T) {
 		stream, cancel = newStream(t)
 		require.NoError(t, stream.Send(req))
 		waitForResponse(t, res, stream, 10*time.Millisecond)
-		require.Len(t, res.RemovedResources, 1)
-		require.Equal(t, res.RemovedResources[0], foo)
-		require.Len(t, res.Resources, 0)
+		require.ElementsMatch(t, []string{foo}, res.RemovedResources)
+		require.Empty(t, res.Resources)
+		cancel()
 	})
 
 	t.Run("SotW", func(t *testing.T) {

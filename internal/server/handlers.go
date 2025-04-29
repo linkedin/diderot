@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"log/slog"
 	"maps"
 	"sync"
 	"time"
@@ -27,7 +26,7 @@ type SendBufferSizeEstimator interface {
 // StartNotificationBatch immediately preceding it. However, SubscriptionHandler.Notify can be
 // invoked at any point.
 type BatchSubscriptionHandler interface {
-	StartNotificationBatch(map[string]string, int)
+	StartNotificationBatch(int)
 	ads.RawSubscriptionHandler
 	EndNotificationBatch()
 }
@@ -127,19 +126,6 @@ type handler struct {
 	// If batchStarted is true, Notify will not notify notificationReceived. This allows the batch to
 	// complete before the response is sent, minimizing the number of responses.
 	batchStarted bool
-
-	// initialResourceVersions is a map of resource names to their initial version.
-	// this informs the server of the versions of the resources the xDS client knows of.
-	initialResourceVersions map[string]*initialResourceVersion
-}
-
-type initialResourceVersion struct {
-	// initial version of the resource, which the xDS client has seen.
-	version string
-	// received flag indicates if the resource has been received from the server and skipped from the response.
-	// we are maintaining this flag to differentiate between the resource which is deleted on cache and
-	// the resource which is not updated since client has last seen it.
-	received bool
 }
 
 // swapEntries grabs the lock then swaps the entries map to a nil map. It resets notificationReceived
@@ -265,10 +251,6 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 		h.entries = sendBufferPool.Get().(sendBuffer)
 	}
 
-	if h.handleMatchFromIRV(name, r) {
-		return
-	}
-
 	h.entries[name] = serverstats.SentResource{
 		Resource: r,
 		Metadata: metadata,
@@ -306,17 +288,11 @@ func (h *handler) ResourceMarshalError(name string, resource proto.Message, err 
 	}
 }
 
-func (h *handler) StartNotificationBatch(initialResourceVersions map[string]string, estimatedSize int) {
+func (h *handler) StartNotificationBatch(estimatedSize int) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	// setInitialResourceVersion sets the initial version of resources to filter out unchanged resources.
-	if len(initialResourceVersions) > 0 {
-		h.initialResourceVersions = make(map[string]*initialResourceVersion, len(initialResourceVersions))
-		for name, version := range initialResourceVersions {
-			h.initialResourceVersions[name] = &initialResourceVersion{version: version}
-		}
-	} else if estimatedSize > 0 {
+	if estimatedSize > 0 {
 		// Only preallocate the send buffer if the initialResourceVersions is empty. Otherwise, it's very
 		// likely that the buffer will be underutilized and waste resources.
 		prevBuf := h.entries
@@ -337,52 +313,12 @@ func (h *handler) EndNotificationBatch() {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	h.handleDeletionsFromIRV()
 	h.batchStarted = false
+
 	if len(h.entries) > 0 {
 		h.immediateNotificationReceived.notify()
 		h.notificationReceived.notify()
 	}
-}
-
-// handleDeletionsFromIRV processes resources that are known to the client but are no longer present on the server.
-// This indicates that the resource has been deleted and the client is unaware of this (e.g. in a re-connect scenario)
-// The method update the entries to nil for such resources.
-func (h *handler) handleDeletionsFromIRV() {
-	for name, irv := range h.initialResourceVersions {
-		if _, ok := h.entries[name]; !ok && !irv.received {
-			slog.Debug("Resource no longer exists on the server but is still present on the client. "+
-				"Explicitly marking the resource for deletion.", "resourceName", name)
-
-			if h.entries == nil {
-				h.entries = sendBufferPool.Get().(sendBuffer)
-			}
-			h.entries[name] = serverstats.SentResource{}
-		}
-	}
-}
-
-// handleMatchFromIRV checks if the given resource matches the initial resource version (IRV).
-func (h *handler) handleMatchFromIRV(name string, r *ads.RawResource) bool {
-	if res, ok := h.initialResourceVersions[name]; ok {
-		if r != nil && res.version == r.Version {
-			slog.Debug(
-				"Resource version matches with IRV from client, skipping this resource",
-				"resourceName", name,
-				"version", res.version,
-			)
-			res.received = true
-
-			if h.statsHandler != nil {
-				h.statsHandler.HandleServerEvent(h.ctx, &serverstats.IRVMatchedResource{
-					ResourceName: name,
-					Resource:     r,
-				})
-			}
-			return true
-		}
-	}
-	return false
 }
 
 func NewSotWHandler(

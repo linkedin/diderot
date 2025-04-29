@@ -96,17 +96,6 @@ type ResourceOverMaxSize struct {
 
 func (s *ResourceOverMaxSize) isServerEvent() {}
 
-// IRVMatchedResource represents stats for resources that are not sent by the server
-// because their version matches the `initial_resource_versions` provided in the client request.
-type IRVMatchedResource struct {
-	// The name of the resource
-	ResourceName string
-	// The resource itself, nil if the resource is being deleted.
-	Resource *ads.RawResource
-}
-
-func (s *IRVMatchedResource) isServerEvent() {}
-
 // UnknownResourceRequested indicates whether a resource that was subscribed never existed. This
 // should be rare, and can be indicative of a bug (either the client is requesting an unknown
 // resource because it is incorrectly configured, or the server is missing some resource that it is

@@ -95,14 +95,3 @@ type ResourceQueued struct {
 }
 
 func (s *ResourceQueued) isServerEvent() {}
-
-// IRVMatchedResource represents stats for resources that are not sent by the server
-// because their version matches the `initial_resource_versions` provided in the client request.
-type IRVMatchedResource struct {
-	// The name of the resource
-	ResourceName string
-	// The resource itself, nil if the resource is being deleted.
-	Resource *ads.RawResource
-}
-
-func (s *IRVMatchedResource) isServerEvent() {}

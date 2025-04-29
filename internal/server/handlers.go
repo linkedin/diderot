@@ -339,6 +339,8 @@ func (h *handler) EndNotificationBatch() {
 
 	h.handleDeletionsFromIRV()
 	h.batchStarted = false
+	// resetting IRV version to nil, so that the next batch can be started with a new set of IRV.
+	h.initialResourceVersions = nil
 	if len(h.entries) > 0 {
 		h.immediateNotificationReceived.notify()
 		h.notificationReceived.notify()

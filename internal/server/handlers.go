@@ -359,7 +359,7 @@ func (h *handler) handleDeletionsFromIRV() {
 			if h.entries == nil {
 				h.entries = sendBufferPool.Get().(sendBuffer)
 			}
-			h.entries[name] = nil
+			h.entries[name] = serverstats.SentResource{}
 		}
 	}
 }

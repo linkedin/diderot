@@ -245,6 +245,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 	ch := make(chan sendBuffer)
 	handler := newHandler(
 		testutils.Context(t),
+		AnyTypeURL,
 		NoopLimiter{},
 		NoopLimiter{},
 		new(customStatsHandler),
@@ -267,7 +268,9 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, sendBuffer{barResource.Name: barResource}, <-ch)
+		require.Equal(t, sendBuffer{
+			barResource.Name: serverstats.SentResource{Resource: barResource},
+		}, <-ch)
 	})
 
 	t.Run("partial update, foo deleted and bar updated", func(t *testing.T) {
@@ -278,8 +281,8 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		released.Store(true)
 		handler.EndNotificationBatch()
 		require.Equal(t, sendBuffer{
-			barResource.Name: barResource,
-			foo:              nil,
+			barResource.Name: serverstats.SentResource{Resource: barResource},
+			foo:              serverstats.SentResource{Resource: nil},
 		}, <-ch)
 	})
 
@@ -291,8 +294,8 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		released.Store(true)
 		handler.EndNotificationBatch()
 		require.Equal(t, sendBuffer{
-			barResource.Name: barResource,
-			foo:              nil,
+			barResource.Name: serverstats.SentResource{Resource: barResource},
+			foo:              serverstats.SentResource{Resource: nil},
 		}, <-ch)
 	})
 }

@@ -268,7 +268,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, sendBuffer{
+		checkSendBuffer(t, sendBuffer{
 			barResource.Name: serverstats.SentResource{Resource: barResource},
 		}, <-ch)
 	})
@@ -280,7 +280,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, sendBuffer{
+		checkSendBuffer(t, sendBuffer{
 			barResource.Name: serverstats.SentResource{Resource: barResource},
 			foo:              serverstats.SentResource{Resource: nil},
 		}, <-ch)
@@ -293,7 +293,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, sendBuffer{
+		checkSendBuffer(t, sendBuffer{
 			barResource.Name: serverstats.SentResource{Resource: barResource},
 			foo:              serverstats.SentResource{Resource: nil},
 		}, <-ch)

@@ -155,6 +155,7 @@ func (m *deltaSubscriptionManager) ProcessSubscriptions(req *ads.DeltaDiscoveryR
 func (m *sotWSubscriptionManager) ProcessSubscriptions(req *ads.SotWDiscoveryRequest) {
 	subscribe, estimatedSize := m.cleanSubscriptionsAndEstimateSize(req.ResourceNames, nil)
 
+	// sotWSubscriptionManager does not support initial resource versions, so we pass nil.
 	m.handler.StartNotificationBatch(nil, estimatedSize)
 	defer m.handler.EndNotificationBatch()
 

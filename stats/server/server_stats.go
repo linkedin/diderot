@@ -109,8 +109,8 @@ type UnknownResourceRequested struct {
 
 func (s *UnknownResourceRequested) isServerEvent() {}
 
-// IRVMatchedResource represents stats for resources that are not sent by the server
-// because their version matches the `initial_resource_versions` provided in the client request.
+// IRVMatchedResource represents stats for resources that matches the `initial_resource_versions`
+// provided by the client.
 type IRVMatchedResource struct {
 	// The name of the resource
 	ResourceName string

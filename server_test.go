@@ -372,6 +372,17 @@ func TestEndToEnd(t *testing.T) {
 		require.Len(t, res.Resources, 1)
 		require.Equal(t, res.Resources[0].Name, "bar")
 
+		// Verify that IRV is being reset.
+		// if IRV is not reset then handler would maintain {"foo": 0, "bar": 0} from previous request on server side
+		// and when empty InitialResourceVersions being pass it would only respond with bar only .
+		// in this case it's responding with foo & bar when the request is being sent on existing stream.
+		req.InitialResourceVersions = map[string]string{}
+		req.ResourceNamesSubscribe = []string{"foo", "bar"}
+		require.NoError(t, stream.Send(req))
+		waitForResponse(t, res, stream, 10*time.Millisecond)
+		require.Len(t, res.Resources, 2)
+		require.ElementsMatch(t, []string{"foo", "bar"}, []string{res.Resources[0].Name, res.Resources[1].Name})
+
 		// Close the stream while the cache is updated to mimic a reconnect
 		cancel()
 

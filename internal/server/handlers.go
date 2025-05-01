@@ -128,7 +128,7 @@ type handler struct {
 	// complete before the response is sent, minimizing the number of responses.
 	batchStarted bool
 
-	// initialResourceVersions is a map of resource names to their initial version.
+	// initialResourceVersions is a map of resource names to their initial versions.
 	// this informs the server of the versions of the resources the xDS client knows of.
 	initialResourceVersions map[string]*initialResourceVersion
 }
@@ -136,8 +136,8 @@ type handler struct {
 type initialResourceVersion struct {
 	// initial version of the resource, which the xDS client has seen.
 	version string
-	// received flag indicates if the resource has been received from the server and skipped from the response.
-	// we are maintaining this flag to differentiate between the resource which is deleted on cache and
+	// received flag indicates if the resource has been received from the server and skipped from the response
+	// being sent. we are maintaining this flag to differentiate between the resource which is deleted on cache and
 	// the resource which is not updated since client has last seen it.
 	received bool
 }
@@ -310,9 +310,10 @@ func (h *handler) StartNotificationBatch(initialResourceVersions map[string]stri
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	// setInitialResourceVersion sets the initial version of resources to filter out unchanged resources.
 	if len(initialResourceVersions) > 0 {
 		h.initialResourceVersions = make(map[string]*initialResourceVersion, len(initialResourceVersions))
+
+		// setting the initial version of resources to filter out unchanged resources.
 		for name, version := range initialResourceVersions {
 			h.initialResourceVersions[name] = &initialResourceVersion{version: version}
 		}
@@ -339,7 +340,6 @@ func (h *handler) EndNotificationBatch() {
 
 	h.handleDeletionsFromIRV()
 	h.batchStarted = false
-	// resetting IRV version to nil, so that the next batch can be started with a new set of IRV.
 	h.initialResourceVersions = nil
 	if len(h.entries) > 0 {
 		h.immediateNotificationReceived.notify()
@@ -364,7 +364,7 @@ func (h *handler) handleDeletionsFromIRV() {
 	}
 }
 
-// handleMatchFromIRV checks if the given resource matches the initial resource version (IRV).
+// handleMatchFromIRV checks if the given resource matches the initial resource versions (IRV).
 func (h *handler) handleMatchFromIRV(name string, r *ads.RawResource) bool {
 	if res, ok := h.initialResourceVersions[name]; ok {
 		if r != nil && res.version == r.Version {

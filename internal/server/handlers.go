@@ -340,6 +340,8 @@ func (h *handler) EndNotificationBatch() {
 
 	h.handleDeletionsFromIRV()
 	h.batchStarted = false
+	// Resetting the initial resource versions to nil, we need to make sure to handle IRV
+	// for each incoming request independently
 	h.initialResourceVersions = nil
 	if len(h.entries) > 0 {
 		h.immediateNotificationReceived.notify()
@@ -356,6 +358,8 @@ func (h *handler) handleDeletionsFromIRV() {
 			slog.Debug("Resource no longer exists on the server but is still present on the client. "+
 				"Explicitly marking the resource for deletion.", "resourceName", name)
 
+			// in some corner case, when last resource is deleted. and there is no subscribed resource present in cache,
+			// entries might be nil, so we need to allocate a new map.
 			if h.entries == nil {
 				h.entries = sendBufferPool.Get().(sendBuffer)
 			}

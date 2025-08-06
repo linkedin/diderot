@@ -93,12 +93,24 @@ type Resource[T proto.Message] struct {
 	marshalErr  error
 }
 
+// ResourceMarshalOptions will be used by [Resource.Marshal] when invoking [anypb.MarshalFrom].
+//
+// NOTE: this must only be updated during initialization time (i.e. in // an init() function).
+var ResourceMarshalOptions = proto.MarshalOptions{
+	// Reusing the cached size makes a significant difference in the current version of gRPC/proto.
+	// Critically, this only works when the underlying proto message is not modified, otherwise
+	// subsequent invocations of [proto.Size] may not return the correct size. However, the
+	// [diderot.Cache] explicitly requires resource *not* be modified after insertion, therefore it is
+	// safe to use the cached size here (see [diderot.Cache.Set]).
+	UseCachedSize: true,
+}
+
 // Marshal returns the serialized version of this Resource. Note that this result is cached, and can
 // be called repeatedly and from multiple goroutines.
 func (r *Resource[T]) Marshal() (*RawResource, error) {
 	r.marshalOnce.Do(func() {
-		var out *anypb.Any
-		out, r.marshalErr = anypb.New(r.Resource)
+		out := new(anypb.Any)
+		r.marshalErr = anypb.MarshalFrom(out, r.Resource, ResourceMarshalOptions)
 		if r.marshalErr != nil {
 			// This shouldn't really ever happen, especially when serializing to Any
 			slog.Error(

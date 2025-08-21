@@ -165,7 +165,6 @@ func (ds *deltaSender) chunk(resourceUpdates sendBuffer) (chunks []*ads.DeltaDis
 						"maxDeltaResponseSize", ds.maxChunkSize,
 						"name", update.Name,
 						"updateSize", update.Size,
-						"resource", r,
 					)
 					continue
 				}

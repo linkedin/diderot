@@ -19,6 +19,8 @@ import (
 	"github.com/linkedin/diderot/internal/utils"
 	serverstats "github.com/linkedin/diderot/stats/server"
 	"github.com/linkedin/diderot/testutils"
+	"github.com/puzpuzpuz/xsync/v4"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
@@ -33,10 +35,17 @@ var (
 	controlPlane = &core.ControlPlane{Identifier: "fooBar"}
 )
 
+func newServerStatsHandler() *serverStatsHandler {
+	return &serverStatsHandler{NoncesSent: xsync.NewMap[string, struct{}]()}
+}
+
 type serverStatsHandler struct {
-	UnknownResources atomic.Int64
-	NACKsReceived    atomic.Int64
-	ACKsReceived     atomic.Int64
+	UnknownResources  atomic.Int64
+	NACKsReceived     atomic.Int64
+	ACKsReceived      atomic.Int64
+	RequestsReceived  atomic.Int64
+	RequestsProcessed atomic.Int64
+	NoncesSent        *xsync.Map[string, struct{}]
 }
 
 func (m *serverStatsHandler) HandleServerEvent(ctx context.Context, event serverstats.Event) {
@@ -48,6 +57,11 @@ func (m *serverStatsHandler) HandleServerEvent(ctx context.Context, event server
 		if e.IsACK {
 			m.ACKsReceived.Add(1)
 		}
+		m.RequestsReceived.Add(1)
+	case *serverstats.RequestProcessed:
+		m.RequestsProcessed.Add(1)
+	case *serverstats.SendingResponse:
+		m.NoncesSent.Store(e.Nonce, struct{}{})
 	case *serverstats.UnknownResourceRequested:
 		m.UnknownResources.Add(1)
 	}
@@ -57,6 +71,20 @@ func (m *serverStatsHandler) reset() {
 	m.UnknownResources.Store(0)
 	m.NACKsReceived.Store(0)
 	m.ACKsReceived.Store(0)
+	m.RequestsReceived.Store(0)
+	m.RequestsProcessed.Store(0)
+	m.NoncesSent.Clear()
+}
+
+func (m *serverStatsHandler) checkRequestCount(t *testing.T, received, acks, nacks int64) {
+	t.Helper()
+	assert.Equal(t, received, m.RequestsReceived.Load(), "received")
+	assert.Equal(t, m.RequestsReceived.Load(), m.RequestsProcessed.Load(), "received != processed")
+	assert.Equal(t, acks, m.ACKsReceived.Load(), "ACKs")
+	assert.Equal(t, nacks, m.NACKsReceived.Load(), "NACKs")
+	if t.Failed() {
+		t.FailNow()
+	}
 }
 
 type testLocator struct {
@@ -65,23 +93,11 @@ type testLocator struct {
 	caches map[string]RawCache
 }
 
-func (tl *testLocator) checkContextNode(streamCtx context.Context) {
-	if tl.node == nil {
-		// skip checking node if nil
-		return
-	}
-	node, ok := NodeFromContext(streamCtx)
-	require.True(tl.t, ok)
-	testutils.ProtoEquals(tl.t, tl.node, node)
-}
-
 func (tl *testLocator) Subscribe(
 	streamCtx context.Context,
 	typeURL, resourceName string,
 	handler ads.RawSubscriptionHandler,
 ) (unsubscribe func()) {
-	tl.checkContextNode(streamCtx)
-
 	c := tl.caches[typeURL]
 	Subscribe(c, resourceName, handler)
 	return func() {
@@ -192,7 +208,7 @@ func TestEndToEnd(t *testing.T) {
 		time.Now(),
 	)
 
-	statsHandler := new(serverStatsHandler)
+	statsHandler := newServerStatsHandler()
 	estimator := new(mockSizeEstimator)
 
 	s := NewADSServer(
@@ -238,7 +254,7 @@ func TestEndToEnd(t *testing.T) {
 		stream, err := client.DeltaAggregatedResources(testutils.ContextWithTimeout(t, 5*time.Second))
 		require.NoError(t, err)
 
-		require.Equal(t, int64(4), statsHandler.ACKsReceived.Load())
+		statsHandler.checkRequestCount(t, 8, 4, 0)
 
 		require.NoError(t, stream.CloseSend())
 	})
@@ -279,14 +295,14 @@ func TestEndToEnd(t *testing.T) {
 		require.NoError(t, stream.Send(req))
 
 		res := new(ads.DeltaDiscoveryResponse)
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 
 		require.Equal(t, res.RemovedResources, []string{testResource.Name})
 		require.Equal(t, int64(1), statsHandler.UnknownResources.Load())
 
 		setEntry(t)
 
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource), res.Resources[0])
@@ -294,7 +310,7 @@ func TestEndToEnd(t *testing.T) {
 		// check that re-subscribing to a resource causes the server to resend it.
 		require.NoError(t, stream.Send(req))
 
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource), res.Resources[0])
@@ -312,7 +328,7 @@ func TestEndToEnd(t *testing.T) {
 
 		clearEntry(testResource.Name)
 
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 
 		require.Len(t, res.Resources, 0)
 		require.Equal(t, res.RemovedResources, []string{testResource.Name})
@@ -323,7 +339,7 @@ func TestEndToEnd(t *testing.T) {
 		req.ResponseNonce = res.Nonce
 		require.NoError(t, stream.Send(req))
 
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 
 		require.Len(t, res.Resources, 0)
 		require.Equal(t, res.RemovedResources, req.ResourceNamesSubscribe)
@@ -342,6 +358,8 @@ func TestEndToEnd(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return statsHandler.NACKsReceived.Load() == 1
 		}, 2*time.Second, 100*time.Millisecond)
+
+		statsHandler.checkRequestCount(t, 5, 2, 1)
 	})
 
 	t.Run("delta IRV support", func(t *testing.T) {
@@ -368,7 +386,7 @@ func TestEndToEnd(t *testing.T) {
 		req.ResourceNamesSubscribe = []string{"foo", "bar"}
 		stream, cancel := newStream(t)
 		require.NoError(t, stream.Send(req))
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		require.Len(t, res.Resources, 1)
 		require.Equal(t, res.Resources[0].Name, "bar")
 
@@ -379,7 +397,7 @@ func TestEndToEnd(t *testing.T) {
 		req.InitialResourceVersions = map[string]string{}
 		req.ResourceNamesSubscribe = []string{"foo", "bar"}
 		require.NoError(t, stream.Send(req))
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		require.Len(t, res.Resources, 2)
 		require.ElementsMatch(t, []string{"foo", "bar"}, []string{res.Resources[0].Name, res.Resources[1].Name})
 
@@ -397,7 +415,7 @@ func TestEndToEnd(t *testing.T) {
 		req.ResourceNamesSubscribe = []string{ads.WildcardSubscription}
 		stream, cancel = newStream(t)
 		require.NoError(t, stream.Send(req))
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		require.Len(t, res.RemovedResources, 1)
 		require.Equal(t, res.RemovedResources[0], bar)
 		require.Len(t, res.Resources, 1)
@@ -437,10 +455,12 @@ func TestEndToEnd(t *testing.T) {
 		req.ResourceNamesSubscribe = []string{ads.WildcardSubscription}
 		stream, cancel = newStream(t)
 		require.NoError(t, stream.Send(req))
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		require.ElementsMatch(t, []string{foo}, res.RemovedResources)
 		require.Empty(t, res.Resources)
 		cancel()
+
+		statsHandler.checkRequestCount(t, 10, 2, 1)
 	})
 
 	t.Run("SotW", func(t *testing.T) {
@@ -462,7 +482,7 @@ func TestEndToEnd(t *testing.T) {
 		require.NoError(t, stream.Send(req))
 
 		res := new(ads.SotWDiscoveryResponse)
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		require.Empty(t, res.Resources)
 		require.Equal(t, int64(2), statsHandler.UnknownResources.Load())
 
@@ -470,19 +490,19 @@ func TestEndToEnd(t *testing.T) {
 		t.Cleanup(func() {
 			listenerCache.Clear(testListener1.Name, time.Now())
 		})
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		if len(res.Resources) == 0 {
 			// This can happen because the responses from the cache notifying the client that testListener1 and
 			// testListener2 arrive asynchronously, so the server may have sent the response for testListener1
 			// not being present before receiving the notification for testListener2. This is simply a property
 			// of SotW, and it's hard to work around.
-			waitForResponse(t, res, stream, 10*time.Millisecond)
+			waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		}
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testListener1).Resource, res.Resources[0])
 
 		listenerCache.SetResource(testListener2, time.Now())
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		require.Len(t, res.Resources, 2)
 		// Order is not guaranteed, so it must be checked explicitly
 		if proto.Equal(testutils.MustMarshal(t, testListener1).Resource, res.Resources[0]) {
@@ -504,7 +524,7 @@ func TestEndToEnd(t *testing.T) {
 		}, 2*time.Second, 100*time.Millisecond)
 
 		listenerCache.Clear(testListener2.Name, time.Now())
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testListener1).Resource, res.Resources[0])
 
@@ -517,7 +537,7 @@ func TestEndToEnd(t *testing.T) {
 		req.ResourceNames = append(req.ResourceNames, "testListener3")
 		require.NoError(t, stream.Send(req))
 
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testListener1).Resource, res.Resources[0])
 		require.Equal(t, int64(2), statsHandler.ACKsReceived.Load())
@@ -535,6 +555,7 @@ func TestEndToEnd(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return statsHandler.NACKsReceived.Load() == 1
 		}, 2*time.Second, 100*time.Millisecond)
+		statsHandler.checkRequestCount(t, 4, 2, 1)
 	})
 
 	// Author's note: there are no semantic differences in the way subscriptions and ACKs are managed for
@@ -570,10 +591,12 @@ func TestEndToEnd(t *testing.T) {
 
 		startWait := time.Now()
 		res := new(ads.SotWDiscoveryResponse)
-		waitForResponse(t, res, stream, wait+delta)
+		waitForResponse(t, res, stream, statsHandler, wait+delta)
 		require.WithinDuration(t, time.Now(), startWait.Add(wait), delta)
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource).Resource, res.Resources[0])
+
+		statsHandler.checkRequestCount(t, 1, 0, 0)
 	})
 
 	// This checks that the size estimator, if provided, is correctly wired in to the subscription
@@ -602,7 +625,7 @@ func TestEndToEnd(t *testing.T) {
 		stream, cancel := newStream(t)
 		defer cancel()
 		require.NoError(t, stream.Send(req))
-		waitForResponse(t, res, stream, 10*time.Millisecond)
+		waitForResponse(t, res, stream, statsHandler, 10*time.Millisecond)
 		select {
 		case <-called:
 		default:
@@ -610,12 +633,15 @@ func TestEndToEnd(t *testing.T) {
 		}
 		require.Len(t, res.Resources, 1)
 		require.Equal(t, res.Resources[0].Name, "foo")
+
+		statsHandler.checkRequestCount(t, 2, 0, 0)
 	})
 }
 
 type xDSResponse interface {
 	proto.Message
 	GetControlPlane() *core.ControlPlane
+	GetNonce() string
 }
 
 // waitForResponse waits for a response on the given stream, failing the test if the response does
@@ -624,6 +650,7 @@ func waitForResponse(
 	t *testing.T,
 	res xDSResponse,
 	stream interface{ RecvMsg(any) error },
+	h *serverStatsHandler,
 	timeout time.Duration,
 ) {
 	t.Helper()
@@ -640,6 +667,9 @@ func waitForResponse(
 		t.Fatalf("Did not receive response in %s", timeout)
 	}
 	testutils.ProtoEquals(t, controlPlane, res.GetControlPlane())
+	if _, ok := h.NoncesSent.LoadAndDelete(res.GetNonce()); !ok {
+		require.Contains(t, xsync.ToPlainMap(h.NoncesSent), res.GetNonce())
+	}
 }
 
 func readResourcesFromJSONFile(t *testing.T, f string) (resources []*ads.RawResource) {
@@ -1113,4 +1143,36 @@ func TestSendBufferSizeEstimator(t *testing.T) {
 			InitialResourceVersions: map[string]string{foo: "0"},
 		})
 	})
+}
+
+func TestSlowResourceLocator(t *testing.T) {
+	testResource, err := ads.NewResource("testListener1", "0", &ads.Listener{Name: "testListener1"}).Marshal()
+	require.NoError(t, err)
+
+	statsHandler := newServerStatsHandler()
+	locator := mockResourceLocator(func(_, name string, h ads.RawSubscriptionHandler) func() {
+		require.Equal(t, int64(1), statsHandler.RequestsReceived.Load())
+		// The request has not been processed since the subscription is still being executed, so the
+		// RequestProcessed event should not have fired yet.
+		require.Equal(t, int64(0), statsHandler.RequestsProcessed.Load())
+		h.Notify(name, testResource, ads.SubscriptionMetadata{})
+		return func() {}
+	})
+
+	s := NewADSServer(locator, WithServerStatsHandler(statsHandler))
+
+	ts := testutils.NewTestGRPCServer(t)
+	discovery.RegisterAggregatedDiscoveryServiceServer(ts.Server, s)
+	ts.Start()
+
+	stream, err := discovery.NewAggregatedDiscoveryServiceClient(ts.Dial()).DeltaAggregatedResources(t.Context())
+	require.NoError(t, err)
+
+	require.NoError(t, stream.Send(&discovery.DeltaDiscoveryRequest{
+		TypeUrl:                testResource.Resource.TypeUrl,
+		ResourceNamesSubscribe: []string{testResource.Name},
+	}))
+
+	_, err = stream.Recv()
+	require.NoError(t, err)
 }

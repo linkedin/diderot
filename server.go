@@ -245,7 +245,7 @@ func (s *ADSServer) StreamAggregatedResources(stream ads.SotWStream) (err error)
 	}
 
 	err = h.loop()
-	slog.DebugContext(h.streamCtx, "Closing stream", "err", err)
+	slog.DebugContext(h.stream.Context(), "Closing stream", "err", err)
 	return err
 }
 
@@ -281,7 +281,7 @@ func (s *ADSServer) DeltaAggregatedResources(stream ads.DeltaStream) (err error)
 	}
 
 	err = h.loop()
-	slog.DebugContext(h.streamCtx, "Closing stream", "err", err)
+	slog.DebugContext(h.stream.Context(), "Closing stream", "err", err)
 	return err
 }
 
@@ -293,6 +293,11 @@ type adsDiscoveryRequest interface {
 	GetNode() *ads.Node
 }
 
+type adsDiscoveryResponse interface {
+	proto.Message
+	GetNonce() string
+}
+
 type adsStream[REQ adsDiscoveryRequest, RES proto.Message] interface {
 	Context() context.Context
 	Recv() (REQ, error)
@@ -300,12 +305,11 @@ type adsStream[REQ adsDiscoveryRequest, RES proto.Message] interface {
 }
 
 // streamHandler captures the various elements required to handle an ADS stream.
-type streamHandler[REQ adsDiscoveryRequest, RES proto.Message] struct {
+type streamHandler[REQ adsDiscoveryRequest, RES adsDiscoveryResponse] struct {
 	sendLock sync.Mutex
 
 	server     *ADSServer
 	stream     adsStream[REQ, RES]
-	streamCtx  context.Context
 	streamType ads.StreamType
 	newHandler func(
 		ctx context.Context,
@@ -331,7 +335,13 @@ func (h *streamHandler[REQ, RES]) send(res RES) (err error) {
 	h.sendLock.Lock()
 	defer h.sendLock.Unlock()
 	h.setControlPlane(res, h.server.controlPlane)
-	slog.DebugContext(h.streamCtx, "Sending", "msg", res)
+	slog.DebugContext(h.stream.Context(), "Sending", "msg", res)
+	if h.server.statsHandler != nil {
+		h.server.statsHandler.HandleServerEvent(h.stream.Context(), &serverstats.SendingResponse{
+			Res:   res,
+			Nonce: res.GetNonce(),
+		})
+	}
 	return h.stream.Send(res)
 }
 
@@ -354,11 +364,11 @@ func (h *streamHandler[REQ, RES]) getSubscriptionManager(typeURL string) interna
 	}
 
 	manager := h.newManager(
-		h.streamCtx,
+		h.stream.Context(),
 		h.server.locator,
 		typeURL,
 		h.newHandler(
-			h.streamCtx,
+			h.stream.Context(),
 			h.server.newGranularRateLimiter(),
 			h.server.statsHandler,
 			typeURL,
@@ -378,11 +388,6 @@ func (h *streamHandler[REQ, RES]) loop() error {
 			return err
 		}
 
-		// initialize the stream context with the node on the first request
-		if h.streamCtx == nil {
-			h.streamCtx = context.WithValue(h.stream.Context(), nodeContextKey{}, req.GetNode())
-		}
-
 		err = h.handleRequest(req)
 		if err != nil {
 			return err
@@ -391,38 +396,44 @@ func (h *streamHandler[REQ, RES]) loop() error {
 }
 
 func (h *streamHandler[REQ, RES]) handleRequest(req REQ) (err error) {
-	slog.DebugContext(h.streamCtx, "Received request", "req", req)
-
-	var stat *serverstats.RequestReceived
 	if h.server.statsHandler != nil {
 		start := time.Now()
-		stat = &serverstats.RequestReceived{Req: req}
 		defer func() {
-			stat.Duration = time.Since(start)
-			h.server.statsHandler.HandleServerEvent(h.streamCtx, stat)
+			h.server.statsHandler.HandleServerEvent(h.stream.Context(), &serverstats.RequestProcessed{
+				Req:      req,
+				Duration: time.Since(start),
+			})
 		}()
 	}
 
-	err = h.server.requestLimiter.Wait(h.streamCtx)
+	slog.DebugContext(h.stream.Context(), "Received request", "req", req)
+
+	var isACK, isNACK bool
+	switch {
+	case req.GetErrorDetail() != nil:
+		slog.WarnContext(h.stream.Context(), "Got client NACK", "req", req)
+		isNACK = true
+	case req.GetResponseNonce() != "":
+		slog.DebugContext(h.stream.Context(), "ACKED", "req", req)
+		isACK = true
+	}
+
+	if h.server.statsHandler != nil {
+		h.server.statsHandler.HandleServerEvent(h.stream.Context(), &serverstats.RequestReceived{
+			Req:    req,
+			IsACK:  isACK,
+			IsNACK: isNACK,
+			Nonce:  req.GetResponseNonce(),
+		})
+	}
+
+	err = h.server.requestLimiter.Wait(h.stream.Context())
 	if err != nil {
 		return err
 	}
 
 	if h.aggregateSubscriptions == nil {
 		h.aggregateSubscriptions = make(map[string]internal.SubscriptionManager[REQ])
-	}
-
-	switch {
-	case req.GetErrorDetail() != nil:
-		slog.WarnContext(h.streamCtx, "Got client NACK", "req", req)
-		if stat != nil {
-			stat.IsNACK = true
-		}
-	case req.GetResponseNonce() != "":
-		slog.DebugContext(h.streamCtx, "ACKED", "req", req)
-		if stat != nil {
-			stat.IsACK = true
-		}
 	}
 
 	h.getSubscriptionManager(req.GetTypeUrl()).ProcessSubscriptions(req)
@@ -462,14 +473,4 @@ type ResourceLocator interface {
 		typeURL, resourceName string,
 		handler ads.RawSubscriptionHandler,
 	) (unsubscribe func())
-}
-
-type nodeContextKey struct{}
-
-// NodeFromContext returns the [ads.Node] in the given context, if it exists. Note that the
-// [ADSServer] will always provide the Node in the context when invoking methods on the
-// [ResourceLocator].
-func NodeFromContext(streamCtx context.Context) (*ads.Node, bool) {
-	node, ok := streamCtx.Value(nodeContextKey{}).(*ads.Node)
-	return node, ok
 }

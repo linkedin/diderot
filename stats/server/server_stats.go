@@ -27,13 +27,24 @@ type RequestReceived struct {
 	// Whether the request is a NACK. Note that this is an important stat that requires immediate human
 	// intervention.
 	IsNACK bool
-	// The given duration represents the time it took to handle the request, i.e. validating it and
-	// processing its subscriptions if necessary. It does not include the time for any of the
-	// resources to be sent in a response.
-	Duration time.Duration
+	// If the request is an ACK or a NACK, it will include a nonce, which should correspond to a nonce
+	// listed in a previously emitted [ResponseSent] event.
+	Nonce string
 }
 
 func (s *RequestReceived) isServerEvent() {}
+
+// RequestProcessed fires when a request is processed.
+type RequestProcessed struct {
+	// The received request, either [ads.SotWDiscoveryRequest] or [ads.DeltaDiscoveryRequest].
+	Req proto.Message
+	// The given duration represents the time it took to process its subscriptions (including any time
+	// spent in the request limiter, if enabled). It does not include the time for any of the resources to
+	// be sent in a response.
+	Duration time.Duration
+}
+
+func (s *RequestProcessed) isServerEvent() {}
 
 // SentResource contains all the metadata about a resource sent by the server. Will be the 0-value
 // for any resource that was provided via the initial_resource_versions field which was not
@@ -48,6 +59,17 @@ type SentResource struct {
 	// long time due to flow control.
 	QueuedAt time.Time
 }
+
+// SendingResponse is fired right before a response is sent. It contains the response itself, as well
+// as the nonce used.
+type SendingResponse struct {
+	// The response that is about to be sent.
+	Res proto.Message
+	// The nonce used in the responses.
+	Nonce string
+}
+
+func (s *SendingResponse) isServerEvent() {}
 
 // ResponseSent contains the stats of a response sent by the server.
 type ResponseSent struct {

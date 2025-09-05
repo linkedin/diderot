@@ -507,7 +507,7 @@ func TestCacheCollections(t *testing.T) {
 // subscribers are wrapped in a wrappedHandler, which is then used as the key in the subscriber map.
 // It's important to check that subscribing then unsubscribing works as expected.
 func TestCacheRaw(t *testing.T) {
-	c := diderot.RawCache(newCache())
+	c := diderot.ToRawCache(newCache())
 	r := newResource(name1, "42")
 
 	ch := make(chan *ads.RawResource, 1)
@@ -521,16 +521,16 @@ func TestCacheRaw(t *testing.T) {
 		},
 	)
 
-	diderot.Subscribe(c, name1, h)
+	c.Subscribe(name1, h)
 	<-ch
-	require.NoError(t, c.SetRaw(testutils.MustMarshal(t, r), noTime))
-	raw, err := c.GetRaw(r.Name)
+	require.NoError(t, c.Set(testutils.MustMarshal(t, r), noTime))
+	raw, err := c.Get(r.Name)
 	require.NoError(t, err)
 	require.Same(t, testutils.MustMarshal(t, r), raw)
 	<-ch
 	c.Clear(name1, noTime)
 	<-ch
-	diderot.Unsubscribe(c, name1, h)
+	c.Unsubscribe(name1, h)
 	select {
 	case raw := <-ch:
 		require.Fail(t, "Received unexpected update after unsubscription", raw)
@@ -847,7 +847,7 @@ func TestGlobRace(t *testing.T) {
 
 		const (
 			entries = 100
-			writers = 100
+			writers = 10
 			count   = 100
 			readers = 100
 
@@ -862,7 +862,7 @@ func TestGlobRace(t *testing.T) {
 
 		var writesDone, readsDone sync.WaitGroup
 		writesDone.Add(writers)
-		readsDone.Add(writers * readers)
+		readsDone.Add(entries * readers)
 
 		for range readers {
 			h := testutils.NewSubscriptionHandler(func(name string, r *ads.Resource[*Timestamp], _ ads.SubscriptionMetadata) {

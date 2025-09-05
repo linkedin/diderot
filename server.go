@@ -152,7 +152,7 @@ func WithControlPlane(controlPlane *corev3.ControlPlane) ADSServerOption {
 // estimator will not be invoked, as it may result in pre-allocating a very large map that will likely
 // not be fully utilized.
 //
-// For convenience, this is trivially implemented by [RawCache.EstimateSubscriptionSize].
+// For convenience, this is trivially implemented by [Cache.EstimateSubscriptionSize].
 //
 // [initial resource versions]: https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/discovery/v3/discovery.proto#service-discovery-v3-deltadiscoveryrequest
 type SendBufferSizeEstimator interface {

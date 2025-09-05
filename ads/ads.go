@@ -196,7 +196,7 @@ const (
 )
 
 // A SubscriptionHandler will receive notifications for the cache entries it has subscribed to using
-// RawCache.Subscribe. Note that it is imperative that implementations be hashable as it will be
+// [Cache.Subscribe]. Note that it is imperative that implementations be hashable as it will be
 // stored as the key to a map (unhashable types include slices and functions).
 type SubscriptionHandler[T proto.Message] interface {
 	// Notify is invoked when the given entry is modified. A deletion is denoted with a nil resource. The given time

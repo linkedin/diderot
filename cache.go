@@ -1,7 +1,6 @@
 package diderot
 
 import (
-	"fmt"
 	"iter"
 	"sync"
 	"time"
@@ -16,14 +15,19 @@ import (
 // For example, it can be used to store the set of "envoy.config.listener.v3.Listener" available to
 // clients.
 type Cache[T proto.Message] interface {
-	RawCache
+	// Type returns the corresponding [Type] for this cache.
+	Type() Type
+	// EntryNames returns an [iter.Seq] that will iterate over all the current entry names in the cache.
+	EntryNames() iter.Seq[string]
+	// EstimateSubscriptionSize estimates the number of resources targeted by the given list of
+	// subscriptions. This is only an estimation since the resource count is dynamic, and repeated
+	// invocations of this function with the same parameters may not yield the same results.
+	EstimateSubscriptionSize(resourceNamesSubscribe []string) int
 	// Set stores the given resource in the cache. If the resource name corresponds to a resource URN, it
 	// will also be stored in the corresponding glob collection (see [TP1 proposal] for additional
 	// details on the format). See Subscribe for more details on how the resources added by this method
-	// can be subscribed to. Invoking Set whenever possible is preferred to RawCache.SetRaw, since it can
-	// return an error if the given resource's type does not match the expected type while Set validates
-	// at compile time that the given value matches the desired type. A zero [time.Time] can be used to
-	// represent that the time at which the resource was created or modified is unknown (or ignored).
+	// can be subscribed to. A zero [time.Time] can be used to represent that the time at which the
+	// resource was created or modified is unknown (or ignored).
 	//
 	// WARNING: It is imperative that the Resource and the underlying [proto.Message] not be modified
 	// after insertion! This resource will be read by subscribers to the cache and callers of Get, and
@@ -38,6 +42,11 @@ type Cache[T proto.Message] interface {
 	SetResource(r *ads.Resource[T], modifiedAt time.Time)
 	// Get fetches the entry, or nil if it's not present and/or has been deleted.
 	Get(name string) *ads.Resource[T]
+	// Clear clears the entry (if present) and notifies all subscribers that the entry has been deleted.
+	// A zero [time.Time] can be used to represent that the time at which the resource was cleared is
+	// unknown (or ignored). For example, when watching a directory, the filesystem does not keep track
+	// of when the file was deleted.
+	Clear(name string, clearedAt time.Time)
 	// IsSubscribedTo checks whether the given handler is subscribed to the given named entry.
 	IsSubscribedTo(name string, handler ads.SubscriptionHandler[T]) bool
 	// Subscribe registers the handler as a subscriber of the given named resource. The handler is always
@@ -105,35 +114,6 @@ type Cache[T proto.Message] interface {
 	//
 	// Noop if the resource does not exist or the handler was not subscribed to it.
 	Unsubscribe(name string, handler ads.SubscriptionHandler[T])
-}
-
-// RawCache is a subset of the [Cache] interface and provides a number of methods to interact with
-// the [Cache] without needing to know the underlying resource type at compile time. All RawCache
-// implementations *must* also implement [Cache] for the underlying resource type.
-type RawCache interface {
-	// Type returns the corresponding [Type] for this cache.
-	Type() Type
-	// EntryNames returns an [iter.Seq] that will iterate over all the current entry names in the cache.
-	EntryNames() iter.Seq[string]
-	// GetRaw is the untyped equivalent of Cache.Get. There are uses for this method, but the preferred
-	// way is to use Cache.Get because this function incurs the cost of marshaling the resource. Returns
-	// an error if the resource cannot be marshaled.
-	GetRaw(name string) (*ads.RawResource, error)
-	// SetRaw is the untyped equivalent of Cache.Set. There are uses for this method, but the preferred
-	// way is to use Cache.Set since it offers a typed API instead of the untyped ads.RawResource parameter.
-	// Subscribers will be notified of the new version of this resource. See Cache.Set for additional
-	// details on how the resources are stored. Returns an error if the given resource's type URL does
-	// not match the expected type URL, or the resource cannot be unmarshaled.
-	SetRaw(r *ads.RawResource, modifiedAt time.Time) error
-	// Clear clears the entry (if present) and notifies all subscribers that the entry has been deleted.
-	// A zero [time.Time] can be used to represent that the time at which the resource was cleared is
-	// unknown (or ignored). For example, when watching a directory, the filesystem does not keep track
-	// of when the file was deleted.
-	Clear(name string, clearedAt time.Time)
-	// EstimateSubscriptionSize estimates the number of resources targeted by the given list of
-	// subscriptions. This is only an estimation since the resource count is dynamic, and repeated
-	// invocations of this function with the same parameters may not yield the same results.
-	EstimateSubscriptionSize(resourceNamesSubscribe []string) int
 }
 
 // NewCache returns a simple Cache with only 1 priority (see NewPrioritizedCache).
@@ -379,14 +359,6 @@ func (c *cache[T]) Get(name string) (r *ads.Resource[T]) {
 	return r
 }
 
-func (c *cache[T]) GetRaw(name string) (*ads.RawResource, error) {
-	r := c.Get(name)
-	if r == nil {
-		return nil, nil
-	}
-	return r.Marshal()
-}
-
 func (c *cache[T]) EntryNames() iter.Seq[string] {
 	return func(yield func(string) bool) {
 		c.resources.Range()(func(k string, v *internal.WatchableValue[T]) bool {
@@ -447,20 +419,4 @@ func (c *cacheWithPriority[T]) SetResource(r *ads.Resource[T], modifiedAt time.T
 	c.createOrModifyEntry(r.Name, func(v *internal.WatchableValue[T]) {
 		v.Set(c.p, r, modifiedAt)
 	})
-}
-
-func (c *cacheWithPriority[T]) SetRaw(raw *ads.RawResource, modifiedAt time.Time) error {
-	// Ensure that the given resource's type URL is correct.
-	if u := raw.GetResource().GetTypeUrl(); u != c.typeReference.URL() {
-		return fmt.Errorf("diderot: invalid type URL, expected %q got %q", c.typeReference, u)
-	}
-
-	r, err := ads.UnmarshalRawResource[T](raw)
-	if err != nil {
-		return err
-	}
-
-	c.SetResource(r, modifiedAt)
-
-	return nil
 }

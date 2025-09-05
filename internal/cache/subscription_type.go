@@ -4,7 +4,7 @@ package internal
 type subscriptionType byte
 
 // The following subscriptionType constants define the ways a client can subscribe to a resource. See
-// RawCache.Subscribe for additional details.
+// [Cache.Subscribe] for additional details.
 const (
 	// An ExplicitSubscription means the client subscribed to a resource by explicit providing its name.
 	ExplicitSubscription = subscriptionType(iota)

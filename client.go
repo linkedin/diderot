@@ -111,6 +111,12 @@ func Watch[T proto.Message](c *ADSClient, name string, watcher Watcher[T]) {
 	}
 }
 
+// Watch is the equivalent of the top-level [Watch] function, except that it can be used to watch
+// resources without knowing the hard type [T] at runtime. Useful when writing type-agnostic code.
+func (c *ADSClient) Watch(t Type, name string, watcher Watcher[proto.Message]) {
+	t.watch(c, name, watcher)
+}
+
 // getResourceHandler gets or initializes the [internal.ResourceHandler] for the specified type in
 // the given client.
 func getResourceHandler[T proto.Message](c *ADSClient) *internal.ResourceHandler[T] {

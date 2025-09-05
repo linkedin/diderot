@@ -37,7 +37,7 @@ func TestType(t *testing.T) {
 				Resource: wrapperspb.Bool(true),
 			}
 			if test.UseRawSetter {
-				require.NoError(t, c.SetRaw(testutils.MustMarshal(t, r), time.Time{}))
+				require.NoError(t, ToRawCache(c).Set(testutils.MustMarshal(t, r), time.Time{}))
 			} else {
 				c.SetResource(r, time.Time{})
 			}
@@ -48,4 +48,14 @@ func TestType(t *testing.T) {
 			require.Nil(t, c.Get(foo))
 		})
 	}
+}
+
+func TestUnwrapCache(t *testing.T) {
+	c := NewCache[*wrapperspb.BoolValue]()
+	_, ok := UnwrapRawCache[*wrapperspb.Int64Value](ToRawCache(c))
+	require.False(t, ok)
+	require.Panics(t, func() {
+		MustUnwrapRawCache[*wrapperspb.Int64Value](ToRawCache(c))
+	})
+	require.Same(t, c, MustUnwrapRawCache[*wrapperspb.BoolValue](ToRawCache(c)))
 }

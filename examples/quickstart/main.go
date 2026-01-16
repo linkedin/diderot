@@ -69,15 +69,15 @@ func (sl SimpleResourceLocator) Subscribe(
 		// Do nothing if the given type is not supported
 		return func() {}
 	}
-	c.Subscribe(resourceName, handler)
+	diderot.Subscribe(c, resourceName, handler)
 	return func() {
-		c.Unsubscribe(resourceName, handler)
+		diderot.Unsubscribe(c, resourceName, handler)
 	}
 }
 
 // getCache extracts a typed [diderot.Cache] from the given [SimpleResourceLocator].
 func getCache[T proto.Message](sl SimpleResourceLocator) diderot.Cache[T] {
-	return diderot.MustUnwrapRawCache[T](sl[diderot.TypeOf[T]().URL()])
+	return sl[diderot.TypeOf[T]().URL()].(diderot.Cache[T])
 }
 
 func (sl SimpleResourceLocator) GetListenerCache() diderot.Cache[*ads.Listener] {

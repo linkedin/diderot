@@ -99,9 +99,9 @@ func (tl *testLocator) Subscribe(
 	handler ads.RawSubscriptionHandler,
 ) (unsubscribe func()) {
 	c := tl.caches[typeURL]
-	c.Subscribe(resourceName, handler)
+	Subscribe(c, resourceName, handler)
 	return func() {
-		c.Unsubscribe(resourceName, handler)
+		Unsubscribe(c, resourceName, handler)
 	}
 }
 
@@ -118,7 +118,7 @@ func newTestLocator(t *testing.T, node *ads.Node, types ...Type) *testLocator {
 }
 
 func getCache[T proto.Message](tl *testLocator) Cache[T] {
-	return MustUnwrapRawCache[T](tl.caches[TypeOf[T]().URL()])
+	return tl.caches[TypeOf[T]().URL()].(Cache[T])
 }
 
 type mockSizeEstimator struct {
@@ -175,7 +175,7 @@ func TestEndToEnd(t *testing.T) {
 	for _, r := range resources {
 		c, ok := locator.caches[r.Resource.TypeUrl]
 		require.Truef(t, ok, "Unknown type loaded from test config %q: %+v", r.Resource.TypeUrl, r)
-		require.NoError(t, c.Set(r, time.Now()))
+		require.NoError(t, c.SetRaw(r, time.Now()))
 	}
 
 	addr := ts.Addr().(*net.TCPAddr)
@@ -733,12 +733,12 @@ func TestSubscriptionManagerSubscriptions(t *testing.T) {
 	)
 	checkSubs := func(t *testing.T, c RawCache, h ads.RawSubscriptionHandler, wildcard, r1Sub, r2Sub bool) {
 		t.Helper()
-		require.Equal(t, wildcard, c.IsSubscribedTo(ads.WildcardSubscription, h), "wildcard")
-		require.Equal(t, r1Sub, c.IsSubscribedTo(r1, h), r1)
-		require.Equal(t, r2Sub, c.IsSubscribedTo(r2, h), r2)
+		require.Equal(t, wildcard, IsSubscribedTo(c, ads.WildcardSubscription, h), "wildcard")
+		require.Equal(t, r1Sub, IsSubscribedTo(c, r1, h), r1)
+		require.Equal(t, r2Sub, IsSubscribedTo(c, r2, h), r2)
 	}
 
-	newCacheAndHandler := func(t *testing.T) (RawCache, ResourceLocator, *simpleBatchHandler) {
+	newCacheAndHandler := func(t *testing.T) (Cache[*wrapperspb.BoolValue], ResourceLocator, *simpleBatchHandler) {
 		tl := newTestLocator(t, nil, TypeOf[*wrapperspb.BoolValue]())
 		c := getCache[*wrapperspb.BoolValue](tl)
 		expected := ads.NewResource(r1, "0", wrapperspb.Bool(true))
@@ -758,7 +758,7 @@ func TestSubscriptionManagerSubscriptions(t *testing.T) {
 			},
 		}
 
-		return ToRawCache(c), tl, h
+		return c, tl, h
 	}
 
 	for _, streamType := range []ads.StreamType{ads.DeltaStreamType, ads.SotWStreamType} {

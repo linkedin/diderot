@@ -60,7 +60,7 @@ func NewGlobCollectionURL[T proto.Message](authority, path string, contextParame
 		Authority:         authority,
 		ResourceType:      getTrimmedTypeURL[T](),
 		Path:              path,
-		ContextParameters: contextParameters.Encode(),
+		ContextParameters: encodeContextParameters(contextParameters),
 	}
 }
 
@@ -70,8 +70,18 @@ func RawNewGlobCollectionURL(authority, typeURL, path string, contextParameters 
 		Authority:         authority,
 		ResourceType:      strings.TrimPrefix(typeURL, types.APITypePrefix),
 		Path:              path,
-		ContextParameters: contextParameters.Encode(),
+		ContextParameters: encodeContextParameters(contextParameters),
 	}
+}
+
+// encodeContextParameters encodes the given context parameters in the form expected by
+// [GlobCollectionURL.ContextParameters], i.e. sorted by key and prefixed with "?", or the empty
+// string if there are none.
+func encodeContextParameters(contextParameters url.Values) string {
+	if encoded := contextParameters.Encode(); encoded != "" {
+		return "?" + encoded
+	}
+	return ""
 }
 
 // ErrInvalidGlobCollectionURI is always returned by the various glob collection URL parsing

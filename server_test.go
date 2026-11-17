@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"net"
+	"net/url"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -1175,4 +1176,39 @@ func TestSlowResourceLocator(t *testing.T) {
 
 	_, err = stream.Recv()
 	require.NoError(t, err)
+}
+
+// TestGlobCollectionWithContextParameters checks that a resource added to the cache under a
+// [ads.GlobCollectionURL.MemberURN] built with [ads.NewGlobCollectionURL] is delivered to a client
+// that subscribes to the collection using the URL format defined in TP1, i.e.
+// xdstp://{authority}/{type}/{path}/*?{context parameters}.
+func TestGlobCollectionWithContextParameters(t *testing.T) {
+	locator := newTestLocator(t, nil, TypeOf[*wrapperspb.BoolValue]())
+	c := getCache[*wrapperspb.BoolValue](locator)
+
+	gcURL := ads.NewGlobCollectionURL[*wrapperspb.BoolValue]("auth", "listeners", url.Values{"region": {"us-east"}})
+	member := c.Set(gcURL.MemberURN("foo"), "0", wrapperspb.Bool(true), time.Now())
+
+	ts := testutils.NewTestGRPCServer(t)
+	discovery.RegisterAggregatedDiscoveryServiceServer(ts.Server, NewADSServer(locator,
+		WithGranularResponseRateLimit(0),
+		WithGlobalResponseRateLimit(0),
+	))
+	ts.Start()
+
+	stream, err := discovery.NewAggregatedDiscoveryServiceClient(ts.Dial()).
+		DeltaAggregatedResources(testutils.ContextWithTimeout(t, 5*time.Second))
+	require.NoError(t, err)
+
+	const collection = "xdstp://auth/google.protobuf.BoolValue/listeners/*?region=us-east"
+	require.NoError(t, stream.Send(&ads.DeltaDiscoveryRequest{
+		TypeUrl:                TypeOf[*wrapperspb.BoolValue]().URL(),
+		ResourceNamesSubscribe: []string{collection},
+	}))
+
+	res, err := stream.Recv()
+	require.NoError(t, err)
+	require.Len(t, res.Resources, 1, "resources: %v, removed: %v", res.Resources, res.RemovedResources)
+	require.Equal(t, member.Name, res.Resources[0].Name)
+	require.Equal(t, "xdstp://auth/google.protobuf.BoolValue/listeners/foo?region=us-east", member.Name)
 }

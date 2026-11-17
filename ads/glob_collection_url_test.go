@@ -1,6 +1,7 @@
 package ads
 
 import (
+	"net/url"
 	"testing"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -191,6 +192,34 @@ func TestParseGlobCollectionURN(t *testing.T) {
 		require.Equal(t, RawNewGlobCollectionURL("", typeURL, "foo", nil), gcURL)
 		require.Equal(t, WildcardSubscription, r)
 	})
+}
+
+func TestNewGlobCollectionURLContextParameters(t *testing.T) {
+	typeURL := getTrimmedTypeURL[*wrapperspb.Int64Value]()
+	params := url.Values{"b": {"2"}, "a": {"1"}}
+	for name, gcURL := range map[string]GlobCollectionURL{
+		"generic": NewGlobCollectionURL[*wrapperspb.Int64Value]("auth", "foo", params),
+		"raw":     RawNewGlobCollectionURL("auth", typeURL, "foo", params),
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, "?a=1&b=2", gcURL.ContextParameters)
+			require.Equal(t, "xdstp://auth/"+resourceType+"/foo/*?a=1&b=2", gcURL.String())
+			require.Equal(t, "xdstp://auth/"+resourceType+"/foo/bar?a=1&b=2", gcURL.MemberURN("bar"))
+
+			parsedURL, err := ParseGlobCollectionURL[*wrapperspb.Int64Value](gcURL.String())
+			require.NoError(t, err)
+			require.Equal(t, gcURL, parsedURL)
+
+			parsedURL, r, err := ParseGlobCollectionURN[*wrapperspb.Int64Value](gcURL.MemberURN("bar"))
+			require.NoError(t, err)
+			require.Equal(t, gcURL, parsedURL)
+			require.Equal(t, "bar", r)
+		})
+	}
+
+	// Empty context parameters must not produce a trailing "?".
+	require.Equal(t, "", NewGlobCollectionURL[*wrapperspb.Int64Value]("auth", "foo", url.Values{}).ContextParameters)
+	require.Equal(t, "", RawNewGlobCollectionURL("auth", typeURL, "foo", nil).ContextParameters)
 }
 
 func TestGetTrimmedTypeURL(t *testing.T) {
